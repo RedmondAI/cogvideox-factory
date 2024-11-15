@@ -375,6 +375,8 @@ class VideoInpaintingDataset(Dataset):
         random_flip_h: float = 0.5,
         random_flip_v: float = 0.5,
         max_resolution: int = 2048,
+        window_size: int = 64,  # Default to larger window for A100s
+        overlap: int = 16,      # Default to larger overlap for better consistency
     ):
         super().__init__()
         self.data_root = Path(data_root)
@@ -384,10 +386,14 @@ class VideoInpaintingDataset(Dataset):
         self.random_flip_h = random_flip_h
         self.random_flip_v = random_flip_v
         self.max_resolution = max_resolution
+        self.window_size = window_size
+        self.overlap = overlap
         
-        # Safety check for resolution
+        # Safety checks
         if max(height, width) > max_resolution:
             raise ValueError(f"Resolution {height}x{width} exceeds maximum allowed {max_resolution}")
+        if window_size < overlap * 2:
+            raise ValueError(f"Window size {window_size} must be at least twice the overlap {overlap}")
         
         # Find all sequence directories
         self.sequence_dirs = []

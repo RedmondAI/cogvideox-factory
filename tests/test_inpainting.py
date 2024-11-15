@@ -10,13 +10,24 @@ import torch.nn.functional as F
 from torch.cuda.amp import autocast
 import gc
 from accelerate.state import PartialState
+from accelerate import Accelerator
+from accelerate.utils import set_seed, DistributedDataParallelKwargs
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize accelerate state
+# Initialize accelerate state with DDP config
+accelerator = Accelerator(
+    kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
+    mixed_precision="fp16",
+)
 _ = PartialState()
+
+# Set constants for A100 optimization
+WINDOW_SIZE = 64
+OVERLAP = 16
+MAX_RESOLUTION = 2048
 
 def get_gpu_memory():
     """Get current GPU memory usage."""
@@ -53,12 +64,15 @@ def test_dataset_initialization():
     
     from dataset import VideoInpaintingDataset
     
-    # Test valid initialization
+    # Test valid initialization with A100-optimized parameters
     dataset = VideoInpaintingDataset(
         data_root=str(test_dir),
-        max_num_frames=64,
+        max_num_frames=100,
         height=720,
         width=1280,
+        window_size=WINDOW_SIZE,
+        overlap=OVERLAP,
+        max_resolution=MAX_RESOLUTION,
     )
     assert len(dataset) == 1
     
@@ -82,9 +96,12 @@ def test_dataset_initialization():
 
 def test_memory_efficiency():
     """Test memory usage during dataset operations."""
+    if not accelerator.is_main_process:
+        return  # Only run memory test on main process
+        
     test_dir = Path("assets/inpainting_test_memory")
     test_dir.mkdir(parents=True, exist_ok=True)
-    create_test_data(test_dir, num_frames=100)  # Create longer sequence
+    create_test_data(test_dir, num_frames=100)
     
     from dataset import VideoInpaintingDataset
     
@@ -95,14 +112,18 @@ def test_memory_efficiency():
         max_num_frames=100,
         height=720,
         width=1280,
+        window_size=WINDOW_SIZE,
+        overlap=OVERLAP,
+        max_resolution=MAX_RESOLUTION,
     )
     
-    # Test memory during loading
+    # Test memory during loading with larger batch sizes
     memory_checkpoints = []
+    batch_size = 2  # Test with same batch size as training
     for i in range(3):
-        item = dataset[0]
+        items = [dataset[0] for _ in range(batch_size)]
         # Explicitly delete tensors
-        del item
+        del items
         torch.cuda.empty_cache()
         gc.collect()
         current_memory = get_gpu_memory()
@@ -112,7 +133,7 @@ def test_memory_efficiency():
     torch.cuda.empty_cache()
     gc.collect()
     final_memory = get_gpu_memory()
-    tolerance = 10  # Allow for small memory variations (in MB)
+    tolerance = 50  # Increased tolerance for multi-GPU setup (in MB)
     assert abs(final_memory - initial_memory) < tolerance, f"Memory not properly released: initial={initial_memory:.1f}MB, final={final_memory:.1f}MB"
     
     print("Memory efficiency tests passed!")
@@ -285,10 +306,10 @@ def test_pipeline():
         vae=model,  # Using transformer as fake VAE for testing
         transformer=model,
         scheduler=scheduler,
-        window_size=32,
-        overlap=8,
+        window_size=WINDOW_SIZE,
+        overlap=OVERLAP,
         vae_precision="fp16",
-        max_resolution=2048,
+        max_resolution=MAX_RESOLUTION,
     )
     
     # Get test batch
@@ -321,8 +342,8 @@ def test_error_handling():
         vae=model,
         transformer=model,
         scheduler=scheduler,
-        window_size=32,
-        overlap=8,
+        window_size=WINDOW_SIZE,
+        overlap=OVERLAP,
     )
     
     # Test with invalid input
@@ -348,8 +369,8 @@ def test_edge_cases():
         vae=model,
         transformer=model,
         scheduler=scheduler,
-        window_size=32,
-        overlap=8,
+        window_size=WINDOW_SIZE,
+        overlap=OVERLAP,
     )
     
     # Test cases
