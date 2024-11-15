@@ -294,11 +294,19 @@ def test_model_modification():
         out_channels=3,
         num_layers=1,
         num_attention_heads=1,
+        use_memory_efficient_attention=True,
+        gradient_checkpointing=True,  # Enable gradient checkpointing during initialization
     )
     
-    # Test gradient checkpointing
-    model.enable_gradient_checkpointing()
-    assert any(hasattr(m, '_gradient_checkpointing') for m in model.modules()), "Gradient checkpointing not enabled"
+    # Test memory optimizations
+    assert model.config.use_memory_efficient_attention, "Memory efficient attention not enabled"
+    assert model.config.gradient_checkpointing, "Gradient checkpointing not enabled in config"
+    
+    # Enable gradient checkpointing explicitly
+    model.gradient_checkpointing_enable()
+    for module in model.modules():
+        if hasattr(module, 'gradient_checkpointing'):
+            assert module.gradient_checkpointing, f"Gradient checkpointing not enabled for {type(module)}"
     
     # Modify model for inpainting
     old_conv = model.conv_in
@@ -320,10 +328,11 @@ def test_model_modification():
     # Test forward pass with chunked input
     batch_size, chunk_size = 1, 32
     test_input = torch.randn(batch_size, chunk_size, 4, 64, 64)  # 4 channels (RGB + mask)
-    output = model(test_input)
+    with torch.cuda.amp.autocast(enabled=True):  # Test with mixed precision
+        output = model(test_input)
     
-    print("Model modification test passed!")
-    return model
+    assert output.shape == (batch_size, chunk_size, 3, 64, 64), f"Wrong output shape: {output.shape}"
+    print("Model modification tests passed!")
 
 def test_pipeline():
     """Test the inpainting pipeline with chunked processing."""
