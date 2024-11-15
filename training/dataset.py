@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, Sampler
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms.functional import resize
-
+from PIL import Image
 
 # Must import after torch because this can sometimes lead to a nasty segmentation fault, or stack smashing error
 # Very few bug reports but it happens. Look in decord Github issues for more relevant information.
@@ -215,6 +215,7 @@ class VideoDataset(Dataset):
             video_num_frames = len(video_reader)
 
             indices = list(range(0, video_num_frames, video_num_frames // self.max_num_frames))
+
             frames = video_reader.get_batch(indices)
             frames = frames[: self.max_num_frames].float()
             frames = frames.permute(0, 3, 1, 2).contiguous()
@@ -362,6 +363,148 @@ class VideoDatasetWithResizeAndRectangleCrop(VideoDataset):
     def _find_nearest_resolution(self, height, width):
         nearest_res = min(self.resolutions, key=lambda x: abs(x[1] - height) + abs(x[2] - width))
         return nearest_res[1], nearest_res[2]
+
+
+class VideoInpaintingDataset(Dataset):
+    def __init__(
+        self,
+        data_root: str,
+        max_num_frames: int = 100,
+        height: int = 720,
+        width: int = 1280,
+        random_flip_h: float = 0.5,
+        random_flip_v: float = 0.5,
+        max_resolution: int = 2048,
+    ):
+        super().__init__()
+        self.data_root = Path(data_root)
+        self.max_num_frames = max_num_frames
+        self.height = height
+        self.width = width
+        self.random_flip_h = random_flip_h
+        self.random_flip_v = random_flip_v
+        self.max_resolution = max_resolution
+        
+        # Safety check for resolution
+        if max(height, width) > max_resolution:
+            raise ValueError(f"Resolution {height}x{width} exceeds maximum allowed {max_resolution}")
+        
+        # Find all sequence directories
+        self.sequence_dirs = []
+        for seq_dir in self.data_root.glob("sequence_*"):
+            if self._validate_sequence(seq_dir):
+                self.sequence_dirs.append(seq_dir)
+        
+        if not self.sequence_dirs:
+            raise RuntimeError(f"No valid sequences found in {data_root}")
+        
+        logger.info(f"Found {len(self.sequence_dirs)} valid sequences")
+    
+    def _validate_sequence(self, seq_dir: Path) -> bool:
+        """Validate sequence directory structure and frame counts."""
+        try:
+            # Check all required subdirectories exist
+            for subdir in [f"RGB_{self.height}", f"MASK_{self.height}", f"GT_{self.height}"]:
+                if not (seq_dir / subdir).is_dir():
+                    logger.warning(f"Missing directory {subdir} in {seq_dir}")
+                    return False
+            
+            # Check frame counts match
+            frame_counts = []
+            for subdir in [f"RGB_{self.height}", f"MASK_{self.height}", f"GT_{self.height}"]:
+                count = len(list((seq_dir / subdir).glob("frame_*.png")))
+                frame_counts.append(count)
+            
+            if not all(c == frame_counts[0] for c in frame_counts):
+                logger.warning(f"Mismatched frame counts in {seq_dir}: {frame_counts}")
+                return False
+            
+            if frame_counts[0] < self.max_num_frames:
+                logger.warning(f"Insufficient frames in {seq_dir}: {frame_counts[0]} < {self.max_num_frames}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error validating sequence {seq_dir}: {e}")
+            return False
+    
+    def _load_image_sequence(self, seq_dir: Path, subdir: str) -> torch.Tensor:
+        """Load image sequence with memory-efficient processing."""
+        img_dir = seq_dir / subdir
+        frames = []
+        
+        try:
+            for img_path in sorted(img_dir.glob("frame_*.png"))[:self.max_num_frames]:
+                # Load and process one frame at a time
+                with Image.open(img_path) as img:
+                    img = img.convert("RGB")
+                    frame = TT.ToTensor()(img)
+                    
+                    # Verify frame dimensions
+                    if frame.shape[-2:] != (self.height, self.width):
+                        frame = F.interpolate(
+                            frame.unsqueeze(0),
+                            size=(self.height, self.width),
+                            mode='bilinear',
+                            align_corners=False
+                        ).squeeze(0)
+                    
+                    frames.append(frame)
+                
+                # Clear CUDA cache after processing each frame
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        
+        except Exception as e:
+            logger.error(f"Error loading sequence from {img_dir}: {e}")
+            raise
+        
+        # Stack frames efficiently
+        sequence = torch.stack(frames)
+        return sequence
+    
+    def __getitem__(self, idx: int) -> dict:
+        """Get a sequence with error handling and memory management."""
+        try:
+            seq_dir = self.sequence_dirs[idx]
+            
+            # Load sequences with memory-efficient processing
+            rgb_seq = self._load_image_sequence(seq_dir, f"RGB_{self.height}")
+            mask_seq = self._load_image_sequence(seq_dir, f"MASK_{self.height}")
+            gt_seq = self._load_image_sequence(seq_dir, f"GT_{self.height}")
+            
+            # Convert mask to single channel
+            mask_seq = mask_seq.mean(dim=1, keepdim=True)
+            mask_seq = (mask_seq > 0.5).float()
+            
+            # Apply random flips consistently across sequence
+            if torch.rand(1) < self.random_flip_h:
+                rgb_seq = torch.flip(rgb_seq, [-1])
+                mask_seq = torch.flip(mask_seq, [-1])
+                gt_seq = torch.flip(gt_seq, [-1])
+            
+            if torch.rand(1) < self.random_flip_v:
+                rgb_seq = torch.flip(rgb_seq, [-2])
+                mask_seq = torch.flip(mask_seq, [-2])
+                gt_seq = torch.flip(gt_seq, [-2])
+            
+            return {
+                "rgb": rgb_seq,
+                "mask": mask_seq,
+                "gt": gt_seq,
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing sequence {idx}: {e}")
+            # Return next valid sequence or raise if none found
+            next_idx = (idx + 1) % len(self)
+            if next_idx != idx:
+                return self.__getitem__(next_idx)
+            raise
+    
+    def __len__(self) -> int:
+        return len(self.sequence_dirs)
 
 
 class BucketSampler(Sampler):
