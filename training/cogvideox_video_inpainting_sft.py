@@ -110,9 +110,14 @@ def temporal_smooth(frames: torch.Tensor, window_size: int = 5) -> torch.Tensor:
     mid_start = frames.shape[1] // 2 - half_window
     mid_end = mid_start + window_size
     
+    # Get the frames before and after transition
+    pre_transition = frames[:, mid_start-1:mid_start-1+window_size]
+    post_transition = frames[:, mid_start:mid_start+window_size]
+    
+    # Blend between pre and post transition frames
     smoothed[:, mid_start:mid_end] = (
-        frames[:, mid_start:mid_end] * weights +
-        frames[:, mid_start:mid_end] * (1 - weights)
+        pre_transition * (1 - weights) +
+        post_transition * weights
     )
     
     return smoothed

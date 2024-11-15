@@ -201,13 +201,18 @@ def test_temporal_smoothing():
     # Test 2: Check that transition region is smoothed
     mid_start = seq.shape[1] // 2 - window_size // 2
     mid_end = mid_start + window_size
-    assert not torch.allclose(smoothed[:, mid_start:mid_end], seq[:, mid_start:mid_end]), \
-        "Transition region should be smoothed"
+    transition_region = smoothed[:, mid_start:mid_end]
     
-    # Test 3: Check smoothing weights are properly applied
-    transition_frames = smoothed[:, mid_start:mid_end]
-    assert torch.all(transition_frames >= 0.0) and torch.all(transition_frames <= 1.0), \
+    # The smoothed values should be between the original values (0 and 1)
+    assert not torch.allclose(transition_region, seq[:, mid_start:mid_end]), \
+        "Transition region should be smoothed"
+    assert torch.all(transition_region >= 0.0) and torch.all(transition_region <= 1.0), \
         "Smoothed values should be between 0 and 1"
+    
+    # Test 3: Check monotonic increase in transition region
+    transition_mean = transition_region.mean(dim=(0,2,3,4))  # Average across batch, channels, height, width
+    assert torch.all(transition_mean[1:] >= transition_mean[:-1]), \
+        "Transition should be monotonically increasing"
     
     print("Temporal smoothing tests passed!")
 
