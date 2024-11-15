@@ -67,6 +67,10 @@ def test_dataset_initialization():
     # Test valid initialization with A100-optimized parameters
     dataset = VideoInpaintingDataset(
         data_root=str(test_dir),
+        split='train',
+        train_ratio=1.0,  # Use all data for training in test
+        val_ratio=0.0,
+        test_ratio=0.0,
         max_num_frames=100,
         height=720,
         width=1280,
@@ -74,12 +78,36 @@ def test_dataset_initialization():
         overlap=OVERLAP,
         max_resolution=MAX_RESOLUTION,
     )
-    assert len(dataset) == 1
+    assert len(dataset) == 1, "Expected 1 sequence in training set"
+    
+    # Test split ratios
+    dataset_splits = VideoInpaintingDataset(
+        data_root=str(test_dir),
+        split='train',
+        train_ratio=0.6,
+        val_ratio=0.2,
+        test_ratio=0.2,
+        max_num_frames=100,
+        height=720,
+        width=1280,
+    )
+    assert len(dataset_splits) == 1, "Expected 1 sequence in training set with 60% split"
+    
+    # Test invalid split ratios
+    with pytest.raises(ValueError, match="Split ratios must sum to 1.0 or less"):
+        VideoInpaintingDataset(
+            data_root=str(test_dir),
+            split='train',
+            train_ratio=0.8,
+            val_ratio=0.8,  # Sum > 1.0
+            test_ratio=0.2,
+        )
     
     # Test resolution limit
     with pytest.raises(ValueError, match="Resolution.*exceeds maximum"):
         VideoInpaintingDataset(
             data_root=str(test_dir),
+            split='train',
             max_num_frames=100,
             height=2049,  # Exceeds max resolution
             width=1280,
@@ -89,6 +117,7 @@ def test_dataset_initialization():
     with pytest.raises(ValueError, match="Window size.*must be at least twice the overlap"):
         VideoInpaintingDataset(
             data_root=str(test_dir),
+            split='train',
             max_num_frames=100,
             height=720,
             width=1280,
