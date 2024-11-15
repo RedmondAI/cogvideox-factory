@@ -1,5 +1,3 @@
-# Run: python3 tests/test_inpainting.py
-
 import os
 import sys
 import torch
@@ -11,10 +9,14 @@ import logging
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
 import gc
+from accelerate.state import PartialState
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Initialize accelerate state
+_ = PartialState()
 
 def get_gpu_memory():
     """Get current GPU memory usage."""
