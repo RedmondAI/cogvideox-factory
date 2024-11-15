@@ -60,7 +60,11 @@ def test_dataset_initialization():
     """Test dataset initialization with various configurations."""
     test_dir = Path("assets/inpainting_test_init")
     test_dir.mkdir(parents=True, exist_ok=True)
-    create_test_data(test_dir, num_frames=100)  # Create enough frames for the test
+    
+    # Create multiple test sequences for split testing
+    for i in range(5):  # Create 5 sequences to test splits
+        seq_dir = test_dir / f"sequence_{i:03d}"
+        create_test_data(seq_dir, num_frames=100)
     
     from dataset import VideoInpaintingDataset
     
@@ -78,10 +82,10 @@ def test_dataset_initialization():
         overlap=OVERLAP,
         max_resolution=MAX_RESOLUTION,
     )
-    assert len(dataset) == 1, "Expected 1 sequence in training set"
+    assert len(dataset) == 5, "Expected all 5 sequences in training set"
     
-    # Test split ratios
-    dataset_splits = VideoInpaintingDataset(
+    # Test split ratios (with 5 sequences: 3/1/1 split)
+    train_dataset = VideoInpaintingDataset(
         data_root=str(test_dir),
         split='train',
         train_ratio=0.6,
@@ -91,7 +95,31 @@ def test_dataset_initialization():
         height=720,
         width=1280,
     )
-    assert len(dataset_splits) == 1, "Expected 1 sequence in training set with 60% split"
+    assert len(train_dataset) == 3, "Expected 3 sequences in training set with 60% split"
+    
+    val_dataset = VideoInpaintingDataset(
+        data_root=str(test_dir),
+        split='val',
+        train_ratio=0.6,
+        val_ratio=0.2,
+        test_ratio=0.2,
+        max_num_frames=100,
+        height=720,
+        width=1280,
+    )
+    assert len(val_dataset) == 1, "Expected 1 sequence in validation set with 20% split"
+    
+    test_dataset = VideoInpaintingDataset(
+        data_root=str(test_dir),
+        split='test',
+        train_ratio=0.6,
+        val_ratio=0.2,
+        test_ratio=0.2,
+        max_num_frames=100,
+        height=720,
+        width=1280,
+    )
+    assert len(test_dataset) == 1, "Expected 1 sequence in test set with 20% split"
     
     # Test invalid split ratios
     with pytest.raises(ValueError, match="Split ratios must sum to 1.0 or less"):
