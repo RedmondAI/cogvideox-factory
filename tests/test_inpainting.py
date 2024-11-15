@@ -159,9 +159,10 @@ def test_padding():
         pad_to_multiple(torch.randn(1, 3, 2049, 1280), max_dim=2048)
     
     # Test 3: Padding would exceed maximum dimension
+    # Calculate dimensions that when padded to next multiple of 64 would exceed 2048
+    # 2048 - 63 = 1985 (largest size that needs padding)
     with pytest.raises(ValueError, match="Padded dimensions .* exceed maximum safe size"):
-        # Create tensor that's just small enough that padding would push it over max_dim
-        x_large = torch.randn(1, 3, 2000, 2000)
+        x_large = torch.randn(1, 3, 1985, 1985)  # Will need padding to 2048, which exceeds max
         pad_to_multiple(x_large, multiple=64, max_dim=2048)
     
     # Test 4: Unpadding recovers original size
