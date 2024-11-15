@@ -58,6 +58,7 @@ logger = get_logger(__name__)
 def pad_to_multiple(x: torch.Tensor, multiple: int = 64, max_dim: int = 2048) -> Tuple[torch.Tensor, Tuple[int, int]]:
     """Pad tensor to multiple with size safety check."""
     h, w = x.shape[-2:]
+    print(f"Input dimensions: h={h}, w={w}")
     
     # Check if input dimensions exceed maximum
     if h > max_dim or w > max_dim:
@@ -65,6 +66,8 @@ def pad_to_multiple(x: torch.Tensor, multiple: int = 64, max_dim: int = 2048) ->
     
     pad_h = (multiple - h % multiple) % multiple
     pad_w = (multiple - w % multiple) % multiple
+    print(f"Padding amounts: pad_h={pad_h}, pad_w={pad_w}")
+    print(f"Final dimensions will be: h={h+pad_h}, w={w+pad_w}")
     
     # Check if padded dimensions exceed maximum
     if h + pad_h > max_dim or w + pad_w > max_dim:

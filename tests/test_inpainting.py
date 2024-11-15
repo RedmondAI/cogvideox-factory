@@ -155,14 +155,18 @@ def test_padding():
     assert padded.shape[-1] % 64 == 0, f"Width {padded.shape[-1]} not multiple of 64"
     
     # Test 2: Input exceeds maximum dimension
+    print("\nTesting input exceeding maximum...")
     with pytest.raises(ValueError, match="Input dimensions .* exceed maximum safe size"):
         pad_to_multiple(torch.randn(1, 3, 2049, 1280), max_dim=2048)
     
     # Test 3: Padding would exceed maximum dimension
-    # Calculate dimensions that when padded to next multiple of 64 would exceed 2048
-    # 2048 - 63 = 1985 (largest size that needs padding)
+    print("\nTesting padding exceeding maximum...")
+    # We want dimensions that when padded to next multiple of 64 would exceed 2048
+    # 2048 - 64 + 1 = 1985 (this ensures padding to next multiple will exceed 2048)
+    h = w = 2048 - 64 + 1  # = 1985
+    print(f"Using dimensions that should exceed max after padding: {h}x{w}")
     with pytest.raises(ValueError, match="Padded dimensions .* exceed maximum safe size"):
-        x_large = torch.randn(1, 3, 1985, 1985)  # Will need padding to 2048, which exceeds max
+        x_large = torch.randn(1, 3, h, w)
         pad_to_multiple(x_large, multiple=64, max_dim=2048)
     
     # Test 4: Unpadding recovers original size
