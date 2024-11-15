@@ -146,7 +146,7 @@ def test_padding():
     """Test resolution padding and unpadding."""
     from cogvideox_video_inpainting_sft import pad_to_multiple, unpad
     
-    # Create test tensor with non-multiple dimensions
+    # Test 1: Normal padding case
     x = torch.randn(1, 3, 720, 1280)
     padded, pad_sizes = pad_to_multiple(x, multiple=64)
     
@@ -154,16 +154,22 @@ def test_padding():
     assert padded.shape[-2] % 64 == 0, f"Height {padded.shape[-2]} not multiple of 64"
     assert padded.shape[-1] % 64 == 0, f"Width {padded.shape[-1]} not multiple of 64"
     
-    # Test maximum dimension check
-    with pytest.raises(ValueError, match="exceed maximum safe size"):
-        pad_to_multiple(torch.randn(1, 3, 2000, 2000), max_dim=2048)
+    # Test 2: Input exceeds maximum dimension
+    with pytest.raises(ValueError, match="Input dimensions .* exceed maximum safe size"):
+        pad_to_multiple(torch.randn(1, 3, 2049, 1280), max_dim=2048)
     
-    # Check unpadding recovers original size
+    # Test 3: Padding would exceed maximum dimension
+    with pytest.raises(ValueError, match="Padded dimensions .* exceed maximum safe size"):
+        # Create tensor that's just small enough that padding would push it over max_dim
+        x_large = torch.randn(1, 3, 2000, 2000)
+        pad_to_multiple(x_large, multiple=64, max_dim=2048)
+    
+    # Test 4: Unpadding recovers original size
     unpadded = unpad(padded, pad_sizes)
     assert unpadded.shape == x.shape, f"Expected shape {x.shape}, got {unpadded.shape}"
     assert torch.allclose(unpadded, x), "Unpadded content doesn't match original"
     
-    print("Padding test passed!")
+    print("Padding tests passed!")
 
 def test_temporal_smoothing():
     """Test temporal smoothing function."""
