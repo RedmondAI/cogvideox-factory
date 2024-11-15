@@ -443,7 +443,7 @@ class VideoInpaintingDataset(Dataset):
                     
                     # Verify frame dimensions
                     if frame.shape[-2:] != (self.height, self.width):
-                        frame = F.interpolate(
+                        frame = TT.functional.interpolate(
                             frame.unsqueeze(0),
                             size=(self.height, self.width),
                             mode='bilinear',
@@ -489,11 +489,19 @@ class VideoInpaintingDataset(Dataset):
                 mask_seq = torch.flip(mask_seq, [-2])
                 gt_seq = torch.flip(gt_seq, [-2])
             
-            return {
-                "rgb": rgb_seq,
-                "mask": mask_seq,
-                "gt": gt_seq,
+            # Move tensors to CPU to avoid GPU memory accumulation
+            result = {
+                "rgb": rgb_seq.cpu(),
+                "mask": mask_seq.cpu(),
+                "gt": gt_seq.cpu(),
             }
+            
+            # Clear intermediate tensors
+            del rgb_seq, mask_seq, gt_seq
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            return result
             
         except Exception as e:
             logger.error(f"Error processing sequence {idx}: {e}")

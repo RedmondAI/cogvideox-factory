@@ -101,14 +101,19 @@ def test_memory_efficiency():
     memory_checkpoints = []
     for i in range(3):
         item = dataset[0]
-        current_memory = get_gpu_memory()
-        memory_checkpoints.append(current_memory)
+        # Explicitly delete tensors
+        del item
         torch.cuda.empty_cache()
         gc.collect()
+        current_memory = get_gpu_memory()
+        memory_checkpoints.append(current_memory)
     
     # Check memory is released
+    torch.cuda.empty_cache()
+    gc.collect()
     final_memory = get_gpu_memory()
-    assert final_memory < max(memory_checkpoints), "Memory not properly released"
+    tolerance = 10  # Allow for small memory variations (in MB)
+    assert abs(final_memory - initial_memory) < tolerance, f"Memory not properly released: initial={initial_memory:.1f}MB, final={final_memory:.1f}MB"
     
     print("Memory efficiency tests passed!")
 
