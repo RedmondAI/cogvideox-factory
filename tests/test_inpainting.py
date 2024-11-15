@@ -35,11 +35,18 @@ def get_gpu_memory():
         return torch.cuda.memory_allocated() / 1024**2  # MB
     return 0
 
-def create_test_data(test_dir, num_frames=100, corrupt_frame_idx=None):
-    """Create test dataset with optional corrupted frame."""
+def create_test_data(test_dir, sequence_name="sequence_001", num_frames=100, corrupt_frame_idx=None):
+    """Create test dataset with optional corrupted frame.
+    
+    Args:
+        test_dir: Root directory for test data
+        sequence_name: Name of the sequence directory
+        num_frames: Number of frames to generate
+        corrupt_frame_idx: Optional index to create a corrupted frame
+    """
     for resolution in ['720']:
         for type_ in ['RGB', 'MASK', 'GT']:
-            dir_path = test_dir / f'sequence_001' / f'{type_}_{resolution}'
+            dir_path = test_dir / sequence_name / f'{type_}_{resolution}'
             dir_path.mkdir(parents=True, exist_ok=True)
             
             for i in range(1, num_frames + 1):
@@ -54,7 +61,7 @@ def create_test_data(test_dir, num_frames=100, corrupt_frame_idx=None):
                         color = 'red' if type_ == 'RGB' else 'blue'
                         img = Image.new('RGB', (1280, 720), color)
                 
-                img.save(dir_path / f'frame_{i:05d}.png')
+                img.save(dir_path / f'frame_{i:05d}.png')  # Using 5 digits padding
 
 def test_dataset_initialization():
     """Test dataset initialization with various configurations."""
@@ -62,9 +69,9 @@ def test_dataset_initialization():
     test_dir.mkdir(parents=True, exist_ok=True)
     
     # Create multiple test sequences for split testing
-    for i in range(5):  # Create 5 sequences to test splits
-        seq_dir = test_dir / f"sequence_{i:03d}"
-        create_test_data(seq_dir, num_frames=100)
+    for i in range(5):
+        seq_name = f"sequence_{i:03d}"
+        create_test_data(test_dir, sequence_name=seq_name, num_frames=100)
     
     from dataset import VideoInpaintingDataset
     
