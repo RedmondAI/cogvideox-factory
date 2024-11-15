@@ -220,29 +220,32 @@ def test_metrics():
     """Test metric computation."""
     from cogvideox_video_inpainting_sft import compute_metrics
     
-    # Create test tensors
-    pred = torch.rand(1, 5, 3, 64, 64)
+    # Create test tensors with larger spatial dimensions
+    pred = torch.rand(1, 5, 3, 128, 128)  # Increased from 64x64 to 128x128
     gt = pred.clone()  # Perfect prediction
     mask = torch.ones_like(pred[:, :, :1])  # Full mask
     
-    # Test perfect prediction
+    # Test 1: Perfect prediction
     metrics = compute_metrics(pred, gt, mask)
-    assert metrics['masked_psnr'] > 40
-    assert metrics['masked_ssim'] > 0.95
-    assert metrics['temporal_consistency'] > 0.95
+    assert metrics['masked_psnr'] > 40, "PSNR should be high for perfect prediction"
+    assert metrics['masked_ssim'] > 0.95, "SSIM should be high for perfect prediction"
+    assert metrics['temporal_consistency'] > 0.95, "Temporal consistency should be high for perfect prediction"
     
-    # Test with noise
+    # Test 2: Noisy prediction
     noisy_pred = pred + torch.randn_like(pred) * 0.1
-    metrics = compute_metrics(noisy_pred, gt, mask)
-    assert metrics['masked_psnr'] < 40
-    assert metrics['masked_ssim'] < 0.95
+    noisy_metrics = compute_metrics(noisy_pred, gt, mask)
+    assert noisy_metrics['masked_psnr'] < metrics['masked_psnr'], "PSNR should be lower for noisy prediction"
+    assert noisy_metrics['masked_ssim'] < metrics['masked_ssim'], "SSIM should be lower for noisy prediction"
+    assert noisy_metrics['temporal_consistency'] < metrics['temporal_consistency'], "Temporal consistency should be lower for noisy prediction"
     
-    # Test partial mask
+    # Test 3: Partial mask
     partial_mask = torch.zeros_like(mask)
-    partial_mask[:, :, :, :32] = 1
-    metrics = compute_metrics(pred, gt, partial_mask)
+    partial_mask[..., 32:96, 32:96] = 1  # Center region
+    partial_metrics = compute_metrics(pred, gt, partial_mask)
+    assert partial_metrics['masked_psnr'] > 40, "PSNR should be high in masked region"
+    assert partial_metrics['masked_ssim'] > 0.95, "SSIM should be high in masked region"
     
-    print("Metrics test passed!")
+    print("Metrics tests passed!")
 
 def test_dataset():
     """Test the VideoInpaintingDataset."""

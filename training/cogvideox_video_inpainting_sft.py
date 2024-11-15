@@ -123,7 +123,16 @@ def temporal_smooth(frames: torch.Tensor, window_size: int = 5) -> torch.Tensor:
     return smoothed
 
 def compute_metrics(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor) -> Dict[str, float]:
-    """Compute metrics with memory efficiency."""
+    """Compute metrics with memory efficiency.
+    
+    Args:
+        pred: Predicted frames [B, T, C, H, W]
+        gt: Ground truth frames [B, T, C, H, W]
+        mask: Binary mask [B, T, 1, H, W]
+    
+    Returns:
+        Dict of metrics including PSNR, SSIM, and temporal consistency
+    """
     metrics = {}
     
     # Move to CPU for metric computation
@@ -134,37 +143,32 @@ def compute_metrics(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor) ->
         
         # Initialize metric computers on CPU
         psnr = PeakSignalNoiseRatio()
-        ssim = StructuralSimilarityIndexMeasure()
+        ssim = StructuralSimilarityIndexMeasure(data_range=1.0)  # Specify data range
         
         # Compute metrics for masked regions
         masked_pred = pred_cpu * mask_cpu
         masked_gt = gt_cpu * mask_cpu
         
-        metrics['masked_psnr'] = psnr(masked_pred, masked_gt)
-        metrics['masked_ssim'] = ssim(masked_pred, masked_gt)
+        # Reshape for 2D metrics (combine batch and time dimensions)
+        B, T, C, H, W = pred_cpu.shape
+        masked_pred_2d = masked_pred.view(B*T, C, H, W)
+        masked_gt_2d = masked_gt.view(B*T, C, H, W)
+        
+        metrics['masked_psnr'] = psnr(masked_pred_2d, masked_gt_2d)
+        metrics['masked_ssim'] = ssim(masked_pred_2d, masked_gt_2d)
         
         # Temporal consistency (compute on GPU if memory allows)
         if pred.device.type == "cuda" and torch.cuda.memory_allocated() < torch.cuda.max_memory_allocated() * 0.8:
-            temp_diff_pred = torch.abs(pred[:, 1:] - pred[:, :-1]).mean()
-            temp_diff_gt = torch.abs(gt[:, 1:] - gt[:, :-1]).mean()
-            metrics['temporal_consistency'] = 1.0 - torch.abs(temp_diff_pred - temp_diff_gt).item()
+            device = pred.device
+            pred_diff = (pred[:, 1:] - pred[:, :-1]).abs().mean()
+            gt_diff = (gt[:, 1:] - gt[:, :-1]).abs().mean()
+            metrics['temporal_consistency'] = 1.0 - (pred_diff - gt_diff).abs().item()
         else:
-            temp_diff_pred = torch.abs(pred_cpu[:, 1:] - pred_cpu[:, :-1]).mean()
-            temp_diff_gt = torch.abs(gt_cpu[:, 1:] - gt_cpu[:, :-1]).mean()
-            metrics['temporal_consistency'] = 1.0 - torch.abs(temp_diff_pred - temp_diff_gt).item()
+            pred_diff = (pred_cpu[:, 1:] - pred_cpu[:, :-1]).abs().mean()
+            gt_diff = (gt_cpu[:, 1:] - gt_cpu[:, :-1]).abs().mean()
+            metrics['temporal_consistency'] = 1.0 - (pred_diff - gt_diff).abs().item()
     
     return metrics
-
-def compute_loss(noise_pred: torch.Tensor, noise: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """Enhanced loss function for inpainting."""
-    # Basic noise prediction loss
-    base_loss = F.mse_loss(noise_pred, noise, reduction="none")
-    
-    # Weight masked regions more heavily
-    mask_weight = 2.0  # Stronger focus on masked regions
-    weighted_loss = base_loss * (1.0 + mask * mask_weight)
-    
-    return weighted_loss.mean()
 
 class CogVideoXInpaintingPipeline:
     def __init__(
