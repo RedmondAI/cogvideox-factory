@@ -35,7 +35,7 @@ def get_gpu_memory():
         return torch.cuda.memory_allocated() / 1024**2  # MB
     return 0
 
-def create_test_data(test_dir, num_frames=64, corrupt_frame_idx=None):
+def create_test_data(test_dir, num_frames=100, corrupt_frame_idx=None):
     """Create test dataset with optional corrupted frame."""
     for resolution in ['720']:
         for type_ in ['RGB', 'MASK', 'GT']:
@@ -60,7 +60,7 @@ def test_dataset_initialization():
     """Test dataset initialization with various configurations."""
     test_dir = Path("assets/inpainting_test_init")
     test_dir.mkdir(parents=True, exist_ok=True)
-    create_test_data(test_dir)
+    create_test_data(test_dir, num_frames=100)  # Create enough frames for the test
     
     from dataset import VideoInpaintingDataset
     
@@ -80,16 +80,20 @@ def test_dataset_initialization():
     with pytest.raises(ValueError, match="Resolution.*exceeds maximum"):
         VideoInpaintingDataset(
             data_root=str(test_dir),
-            height=3000,  # Exceeds max_resolution
+            max_num_frames=100,
+            height=2049,  # Exceeds max resolution
             width=1280,
         )
     
-    # Test missing directory
-    with pytest.raises(RuntimeError, match="No valid sequences found"):
+    # Test window size validation
+    with pytest.raises(ValueError, match="Window size.*must be at least twice the overlap"):
         VideoInpaintingDataset(
-            data_root="nonexistent_dir",
+            data_root=str(test_dir),
+            max_num_frames=100,
             height=720,
             width=1280,
+            window_size=16,  # Too small for overlap
+            overlap=16,
         )
     
     print("Dataset initialization tests passed!")
