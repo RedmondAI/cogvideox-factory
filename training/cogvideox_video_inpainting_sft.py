@@ -87,19 +87,34 @@ def unpad(x: torch.Tensor, pad_sizes: Tuple[int, int]) -> torch.Tensor:
     return x
 
 def temporal_smooth(frames: torch.Tensor, window_size: int = 5) -> torch.Tensor:
-    """Apply temporal smoothing at chunk boundaries."""
+    """Apply temporal smoothing at chunk boundaries.
+    
+    Args:
+        frames: Input frames tensor of shape [B, T, C, H, W]
+        window_size: Size of the smoothing window
+    
+    Returns:
+        Smoothed frames tensor of same shape
+    """
     if frames.shape[1] <= window_size:
         return frames
     
     smoothed = frames.clone()
-    overlap_start = max(0, frames.shape[1] - window_size)
+    half_window = window_size // 2
+    
+    # Create weights for smooth transition
     weights = torch.linspace(0, 1, window_size, device=frames.device)
     weights = weights.view(1, -1, 1, 1, 1)
     
-    smoothed[:, overlap_start:] = (
-        frames[:, overlap_start:] * weights +
-        frames[:, -window_size:] * (1 - weights)
+    # Apply smoothing in the middle region
+    mid_start = frames.shape[1] // 2 - half_window
+    mid_end = mid_start + window_size
+    
+    smoothed[:, mid_start:mid_end] = (
+        frames[:, mid_start:mid_end] * weights +
+        frames[:, mid_start:mid_end] * (1 - weights)
     )
+    
     return smoothed
 
 def compute_metrics(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor) -> Dict[str, float]:

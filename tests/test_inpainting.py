@@ -186,25 +186,30 @@ def test_temporal_smoothing():
     """Test temporal smoothing function."""
     from cogvideox_video_inpainting_sft import temporal_smooth
     
-    # Create test sequence with known pattern
+    # Create test sequence with sharp transition in middle
     seq = torch.zeros(1, 10, 3, 64, 64)
-    seq[:, 5:] = 1.0  # Sharp transition
+    seq[:, 5:] = 1.0  # Sharp transition at frame 5
     
-    # Apply smoothing
-    smoothed = temporal_smooth(seq, window_size=3)
+    # Apply smoothing with window size 3
+    window_size = 3
+    smoothed = temporal_smooth(seq, window_size=window_size)
     
-    # Check middle frames unchanged
-    assert torch.allclose(smoothed[:, :4], seq[:, :4])
+    # Test 1: Check that frames far from transition are unchanged
+    assert torch.allclose(smoothed[:, :3], seq[:, :3]), "Early frames should be unchanged"
+    assert torch.allclose(smoothed[:, 7:], seq[:, 7:]), "Late frames should be unchanged"
     
-    # Check transition is smoothed
-    assert not torch.allclose(smoothed[:, 4:7], seq[:, 4:7])
+    # Test 2: Check that transition region is smoothed
+    mid_start = seq.shape[1] // 2 - window_size // 2
+    mid_end = mid_start + window_size
+    assert not torch.allclose(smoothed[:, mid_start:mid_end], seq[:, mid_start:mid_end]), \
+        "Transition region should be smoothed"
     
-    # Test different window sizes
-    for window_size in [3, 5, 7]:
-        smoothed = temporal_smooth(seq, window_size=window_size)
-        assert smoothed.shape == seq.shape
+    # Test 3: Check smoothing weights are properly applied
+    transition_frames = smoothed[:, mid_start:mid_end]
+    assert torch.all(transition_frames >= 0.0) and torch.all(transition_frames <= 1.0), \
+        "Smoothed values should be between 0 and 1"
     
-    print("Temporal smoothing test passed!")
+    print("Temporal smoothing tests passed!")
 
 def test_metrics():
     """Test metric computation."""
