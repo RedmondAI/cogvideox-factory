@@ -369,6 +369,10 @@ class VideoInpaintingDataset(Dataset):
     def __init__(
         self,
         data_root: str,
+        split: str = 'train',
+        train_ratio: float = 0.8,
+        val_ratio: float = 0.1,
+        test_ratio: float = 0.1,
         max_num_frames: int = 100,
         height: int = 720,
         width: int = 1280,
@@ -380,6 +384,7 @@ class VideoInpaintingDataset(Dataset):
     ):
         super().__init__()
         self.data_root = Path(data_root)
+        self.split = split
         self.max_num_frames = max_num_frames
         self.height = height
         self.width = width
@@ -394,18 +399,37 @@ class VideoInpaintingDataset(Dataset):
             raise ValueError(f"Resolution {height}x{width} exceeds maximum allowed {max_resolution}")
         if window_size < overlap * 2:
             raise ValueError(f"Window size {window_size} must be at least twice the overlap {overlap}")
+        if not (0 < train_ratio + val_ratio + test_ratio <= 1.0):
+            raise ValueError("Split ratios must sum to 1.0 or less")
         
         # Find all sequence directories
-        self.sequence_dirs = []
+        all_sequences = []
         for seq_dir in self.data_root.glob("sequence_*"):
             if self._validate_sequence(seq_dir):
-                self.sequence_dirs.append(seq_dir)
+                all_sequences.append(seq_dir)
         
-        if not self.sequence_dirs:
+        if not all_sequences:
             raise RuntimeError(f"No valid sequences found in {data_root}")
         
-        logger.info(f"Found {len(self.sequence_dirs)} valid sequences")
-    
+        # Sort for deterministic splitting
+        all_sequences.sort()
+        
+        # Split sequences
+        n_total = len(all_sequences)
+        n_train = int(n_total * train_ratio)
+        n_val = int(n_total * val_ratio)
+        
+        if split == 'train':
+            self.sequence_dirs = all_sequences[:n_train]
+        elif split == 'val':
+            self.sequence_dirs = all_sequences[n_train:n_train+n_val]
+        elif split == 'test':
+            self.sequence_dirs = all_sequences[n_train+n_val:]
+        else:
+            raise ValueError(f"Invalid split: {split}")
+        
+        logger.info(f"Found {len(self.sequence_dirs)} sequences for {split} split")
+
     def _validate_sequence(self, seq_dir: Path) -> bool:
         """Validate sequence directory structure and frame counts."""
         try:

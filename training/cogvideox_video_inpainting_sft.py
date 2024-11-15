@@ -330,7 +330,7 @@ def log_validation(
     pipeline.vae.eval()
     
     if validation_data is None:
-        # Use first batch from training set
+        # Use first batch from validation set
         validation_data = next(iter(accelerator.get_eval_dataloader()))
     
     rgb = validation_data["rgb"]
@@ -433,15 +433,27 @@ def main(args):
         else:
             raise ValueError("xformers is not available. Make sure it is installed correctly")
     
-    # Dataset and DataLoaders
+    # Dataset and DataLoaders creation
     train_dataset = VideoInpaintingDataset(
         data_root=args.data_root,
+        split='train',
         max_num_frames=args.max_num_frames,
         height=720,
         width=1280,
         random_flip_h=args.random_flip_h,
         random_flip_v=args.random_flip_v,
         noise_range=args.noise_range,
+    )
+    
+    val_dataset = VideoInpaintingDataset(
+        data_root=args.data_root,
+        split='val',
+        max_num_frames=args.max_num_frames,
+        height=720,
+        width=1280,
+        random_flip_h=0.0,  # No augmentation for validation
+        random_flip_v=0.0,
+        noise_range=None,
     )
     
     train_dataloader = DataLoader(
@@ -452,6 +464,14 @@ def main(args):
         collate_fn=collate_fn,
     )
     
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=args.eval_batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=collate_fn,
+    )
+
     # Optimizer
     if args.use_8bit_adam:
         import bitsandbytes as bnb
@@ -602,6 +622,7 @@ def main(args):
                         pipeline=pipeline,
                         args=args,
                         epoch=epoch,
+                        validation_data=next(iter(accelerator.get_eval_dataloader())),
                     )
             
             progress_bar.update(1)
