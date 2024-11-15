@@ -487,5 +487,9 @@ def run_all_tests():
         gc.collect()
 
 if __name__ == "__main__":
-    sys.path.append("./training")
+    import os
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    training_dir = os.path.join(project_root, "training")
+    sys.path.append(training_dir)
     run_all_tests()
