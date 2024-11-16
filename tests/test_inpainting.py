@@ -1118,7 +1118,7 @@ def test_transformer_shapes():
     
     # Test transformer forward pass
     latents = torch.randn(B, 16, T//2, H//8, W//8, device=device, dtype=torch.float16)
-    timesteps = torch.zeros(B, device=device, dtype=torch.long)
+    timesteps = torch.tensor([999], device=device, dtype=torch.long)  # 1D array with single timestep
     encoder_hidden_states = torch.randn(B, 1, 4096, device=device, dtype=torch.float16)
     
     output = transformer(
