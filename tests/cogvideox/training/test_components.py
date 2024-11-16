@@ -51,18 +51,18 @@ def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=N
     if noise.shape != noise_pred.shape:
         H_out, W_out = noise_pred.shape[3:]
         noise = torch.nn.functional.interpolate(
-            noise.reshape(-1, *noise.shape[2:]), 
+            noise.reshape(-1, noise.shape[2], noise.shape[3], noise.shape[4]), 
             size=(H_out, W_out), 
             mode='bilinear'
-        ).reshape(*noise.shape[:2], *noise_pred.shape[2:])
+        ).reshape(noise.shape[0], noise.shape[1], noise.shape[2], H_out, W_out)
     
     if noisy_frames is not None and noisy_frames.shape != noise_pred.shape:
         H_out, W_out = noise_pred.shape[3:]
         noisy_frames = torch.nn.functional.interpolate(
-            noisy_frames.reshape(-1, *noisy_frames.shape[2:]), 
+            noisy_frames.reshape(-1, noisy_frames.shape[2], noisy_frames.shape[3], noisy_frames.shape[4]), 
             size=(H_out, W_out), 
             mode='bilinear'
-        ).reshape(*noisy_frames.shape[:2], *noise_pred.shape[2:])
+        ).reshape(noisy_frames.shape[0], noisy_frames.shape[1], noisy_frames.shape[2], H_out, W_out)
     
     # Compute target
     v_target = noise * alpha_prod_t.sqrt() - sigma_t * noisy_frames if noisy_frames is not None else noise
@@ -73,10 +73,10 @@ def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=N
         if mask.shape != noise_pred.shape:
             H_out, W_out = noise_pred.shape[3:]
             mask = torch.nn.functional.interpolate(
-                mask.reshape(-1, *mask.shape[2:]), 
+                mask.reshape(-1, mask.shape[2], mask.shape[3], mask.shape[4]), 
                 size=(H_out, W_out), 
                 mode='nearest'
-            ).reshape(*mask.shape[:2], *noise_pred.shape[2:])
+            ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], H_out, W_out)
         masked_pred = noise_pred * mask
         masked_target = v_target * mask
         return F.mse_loss(masked_pred, masked_target)
