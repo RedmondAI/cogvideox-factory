@@ -609,22 +609,27 @@ class CogVideoXInpaintingPipeline:
         Returns:
             Tuple of (mean_diff, max_diff) at the boundary
         """
-        # Ensure window is within bounds
+        # Ensure window is within bounds and has valid size
         left_start = max(0, boundary - window_size)
         left_end = boundary
         right_start = boundary
         right_end = min(video.shape[-1], boundary + window_size)
         
-        if left_start >= left_end or right_start >= right_end:
+        window_width = min(left_end - left_start, right_end - right_start)
+        if window_width <= 0:
             return 0.0, 0.0  # Skip if window is invalid
         
+        # Adjust window to be equal size on both sides
+        left_end = left_start + window_width
+        right_end = right_start + window_width
+        
         # Get values around boundary
-        left_vals = video[..., left_start:left_end]
-        right_vals = video[..., right_start:right_end]
+        left_vals = video[..., left_start:left_end].float()
+        right_vals = video[..., right_start:right_end].float()
         
         # Reshape tensors to combine all dimensions except the last
-        left_flat = left_vals.reshape(-1, left_vals.shape[-1])
-        right_flat = right_vals.reshape(-1, right_vals.shape[-1])
+        left_flat = left_vals.reshape(-1, window_width)
+        right_flat = right_vals.reshape(-1, window_width)
         
         # Calculate mean values along the seam
         left_mean = left_flat.mean(dim=0)
