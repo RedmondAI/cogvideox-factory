@@ -15,6 +15,11 @@ def analyze_vae(vae):
     print("\nAnalyzing VAE architecture...")
     logger.info("\n=== VAE Analysis ===")
     
+    # Check device
+    print(f"Model is on device: {vae.device}")
+    if not torch.cuda.is_available():
+        print("WARNING: CUDA is not available, running on CPU will be slow!")
+    
     # Basic config
     print("Checking basic configuration...")
     logger.info("\nBasic Configuration:")
@@ -47,52 +52,79 @@ def analyze_vae(vae):
     logger.info(f"Sample height: {vae.config.sample_height}")
     logger.info(f"Sample width: {vae.config.sample_width}")
     
-    # Analyze first conv layer
-    print("Analyzing first conv layer...")
-    logger.info("\nFirst Conv Layer Analysis:")
-    if hasattr(vae.encoder, 'conv_in'):
-        conv_in = vae.encoder.conv_in.conv
-        logger.info(f"Conv in channels: {conv_in.in_channels}")
-        logger.info(f"Conv out channels: {conv_in.out_channels}")
-        logger.info(f"Conv kernel size: {conv_in.kernel_size}")
-        logger.info(f"Conv stride: {conv_in.stride}")
-        logger.info(f"Conv weight shape: {conv_in.weight.shape}")
-    
     # Test forward pass with correct shapes
     print("Testing forward pass...")
     logger.info("\nTesting Forward Pass:")
-    B, T, C, H, W = 1, 5, vae.config.in_channels, 64, 64
-    test_input = torch.randn(B, C, T, H, W, device=vae.device, dtype=vae.dtype)  # Note: [B, C, T, H, W] format
+    
+    # Create small test input
+    B, T, C, H, W = 1, 5, vae.config.in_channels, 32, 32  # Reduced size for faster testing
+    print(f"Creating test input with shape: [B={B}, C={C}, T={T}, H={H}, W={W}]")
+    test_input = torch.randn(B, C, T, H, W, device=vae.device, dtype=vae.dtype)
     logger.info(f"Input shape: {test_input.shape}")
+    
+    import time
+    import signal
+    from contextlib import contextmanager
+    
+    @contextmanager
+    def timeout(seconds):
+        def signal_handler(signum, frame):
+            raise TimeoutError(f"Operation timed out after {seconds} seconds")
+        
+        # Register a function to raise a TimeoutError on the signal
+        signal.signal(signal.SIGALRM, signal_handler)
+        signal.alarm(seconds)
+        
+        try:
+            yield
+        finally:
+            # Disable the alarm
+            signal.alarm(0)
     
     with torch.no_grad():
         try:
             print("Attempting forward pass with [B, C, T, H, W] format...")
-            encoded = vae.encode(test_input)
-            latents = encoded.latent_dist.sample()
-            logger.info(f"Latent shape: {latents.shape}")
-            print(f"Latent shape: {latents.shape}")
+            start_time = time.time()
             
-            decoded = vae.decode(latents)
-            logger.info(f"Output shape: {decoded.shape}")
-            print(f"Output shape: {decoded.shape}")
+            with timeout(10):  # 10 second timeout
+                encoded = vae.encode(test_input)
+                latents = encoded.latent_dist.sample()
+                decode_time = time.time()
+                print(f"Encoding took {decode_time - start_time:.2f} seconds")
+                print(f"Latent shape: {latents.shape}")
+                
+                decoded = vae.decode(latents)
+                print(f"Decoding took {time.time() - decode_time:.2f} seconds")
+                print(f"Output shape: {decoded.shape}")
+                
+        except TimeoutError as e:
+            print(f"Forward pass timed out: {e}")
+            print("This might indicate the model is running on CPU or experiencing memory issues")
+            raise
         except Exception as e:
             print(f"First format failed: {e}")
             logger.error(f"Forward pass failed: {e}")
-            # Try alternative format
-            print("Trying alternative format [B, T, C, H, W]...")
-            test_input_alt = test_input.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
-            logger.info(f"Trying alternative input shape: {test_input_alt.shape}")
-            encoded = vae.encode(test_input_alt)
-            latents = encoded.latent_dist.sample()
-            logger.info(f"Latent shape: {latents.shape}")
-            print(f"Latent shape: {latents.shape}")
-            decoded = vae.decode(latents)
-            logger.info(f"Output shape: {decoded.shape}")
-            print(f"Output shape: {decoded.shape}")
+            
+            # Try alternative format with smaller input
+            print("Trying alternative format [B, T, C, H, W] with smaller input...")
+            B, T, C, H, W = 1, 3, vae.config.in_channels, 32, 32  # Even smaller test
+            test_input_alt = torch.randn(B, T, C, H, W, device=vae.device, dtype=vae.dtype)
+            print(f"Alternative input shape: {test_input_alt.shape}")
+            
+            start_time = time.time()
+            with timeout(10):  # 10 second timeout
+                encoded = vae.encode(test_input_alt)
+                latents = encoded.latent_dist.sample()
+                decode_time = time.time()
+                print(f"Alternative encoding took {decode_time - start_time:.2f} seconds")
+                print(f"Latent shape: {latents.shape}")
+                
+                decoded = vae.decode(latents)
+                print(f"Alternative decoding took {time.time() - decode_time:.2f} seconds")
+                print(f"Output shape: {decoded.shape}")
     
     # Memory analysis
-    print("Analyzing memory usage...")
+    print("\nAnalyzing memory usage...")
     logger.info("\nMemory Analysis:")
     total_params = sum(p.numel() for p in vae.parameters())
     trainable_params = sum(p.numel() for p in vae.parameters() if p.requires_grad)
@@ -101,18 +133,10 @@ def analyze_vae(vae):
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable parameters: {trainable_params:,}")
     
-    # Analyze model structure
-    print("Analyzing model structure...")
-    logger.info("\nModel Structure:")
-    for name, module in vae.named_modules():
-        if isinstance(module, (nn.Conv3d, nn.ConvTranspose3d)):
-            logger.info(f"\nLayer: {name}")
-            logger.info(f"Type: {type(module).__name__}")
-            logger.info(f"In channels: {module.in_channels}")
-            logger.info(f"Out channels: {module.out_channels}")
-            logger.info(f"Kernel size: {module.kernel_size}")
-            logger.info(f"Stride: {module.stride}")
-            logger.info(f"Weight shape: {module.weight.shape}")
+    if torch.cuda.is_available():
+        print("\nGPU Memory Usage:")
+        print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.1f} MB")
+        print(f"Cached: {torch.cuda.memory_reserved() / 1024**2:.1f} MB")
     
     print("VAE analysis completed!")
     return vae.config.latent_channels
