@@ -399,22 +399,38 @@ def test_model_modification():
     assert model.gradient_checkpointing, "Gradient checkpointing not enabled in model"
     assert hasattr(model, 'gradient_checkpointing'), "Model doesn't support gradient checkpointing"
     
-    # Modify model for inpainting
-    old_conv = model.conv_in
-    model.config.in_channels += 1
-    model.conv_in = nn.Conv3d(
-        model.config.in_channels,
-        old_conv.out_channels,
-        kernel_size=old_conv.kernel_size,
-        stride=old_conv.stride,
-        padding=old_conv.padding,
+    # Get the first conv layer
+    conv_in = None
+    for module in model.modules():
+        if isinstance(module, nn.Conv3d):
+            conv_in = module
+            break
+    
+    assert conv_in is not None, "Could not find input conv layer"
+    
+    # Create new conv with extra channel for mask
+    new_conv = nn.Conv3d(
+        conv_in.in_channels + 1,  # Add mask channel
+        conv_in.out_channels,
+        kernel_size=conv_in.kernel_size,
+        stride=conv_in.stride,
+        padding=conv_in.padding,
     )
     
     # Initialize new weights
     with torch.no_grad():
-        model.conv_in.weight[:, :3] = old_conv.weight
-        model.conv_in.weight[:, 3:] = 0
-        model.conv_in.bias = nn.Parameter(old_conv.bias.clone())
+        new_conv.weight[:, :3] = conv_in.weight
+        new_conv.weight[:, 3:] = 0  # Initialize mask channel to 0
+        new_conv.bias = nn.Parameter(conv_in.bias.clone())
+    
+    # Replace the conv layer
+    for name, module in model.named_modules():
+        if module is conv_in:
+            parent_name = '.'.join(name.split('.')[:-1])
+            layer_name = name.split('.')[-1]
+            parent = model if not parent_name else getattr(model, parent_name)
+            setattr(parent, layer_name, new_conv)
+            break
     
     # Test forward pass with chunked input
     batch_size, chunk_size = 1, 32
