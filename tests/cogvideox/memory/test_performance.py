@@ -51,16 +51,12 @@ def test_memory_calculation():
     )
     timestep = torch.randint(0, 1000, (batch_size,), device=device)
     
-    # Create position IDs for rotary embeddings
-    position_ids = torch.arange(num_frames, device=device)
-    
     # Forward pass
     try:
         output = transformer(
             hidden_states=hidden_states,
             timestep=timestep.to(dtype=torch.float16),
             encoder_hidden_states=encoder_hidden_states,
-            position_ids=position_ids,
         ).sample
         
         # Verify no NaN values
