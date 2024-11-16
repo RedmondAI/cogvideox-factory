@@ -447,7 +447,8 @@ class VideoInpaintingDataset(Dataset):
         self._validate_sequences()
     
     def _validate_sequences(self):
-        """Validate that all sequences have the required structure and files."""
+        """Validate sequences and filter out invalid ones."""
+        valid_sequences = []
         for seq_dir in self.video_sequences:
             # Check required directories exist
             rgb_dir = seq_dir / self.video_dir
@@ -455,16 +456,40 @@ class VideoInpaintingDataset(Dataset):
             gt_dir = seq_dir / self.gt_dir
             
             if not all(d.exists() and d.is_dir() for d in [rgb_dir, mask_dir, gt_dir]):
-                raise ValueError(f"Sequence {seq_dir} missing required directories")
+                logger.warning(f"Skipping sequence {seq_dir}: missing required directories")
+                continue
             
-            # Check frame files exist
+            # Check minimum number of frames in each directory
+            min_frames = 100
+            rgb_frames = len(list(rgb_dir.glob("frame_*.png")))
+            mask_frames = len(list(mask_dir.glob("frame_*.png")))
+            gt_frames = len(list(gt_dir.glob("frame_*.png")))
+            
+            if any(count < min_frames for count in [rgb_frames, mask_frames, gt_frames]):
+                logger.warning(
+                    f"Skipping sequence {seq_dir}: insufficient frames "
+                    f"(RGB: {rgb_frames}, Mask: {mask_frames}, GT: {gt_frames}, "
+                    f"minimum required: {min_frames})"
+                )
+                continue
+            
+            # Check all required frames exist
+            frames_missing = False
             for frame_idx in range(1, self.num_frames + 1):
                 frame_name = f"frame_{frame_idx:05d}.png"
-                if not all(
-                    (d / frame_name).exists() 
-                    for d in [rgb_dir, mask_dir, gt_dir]
-                ):
-                    raise ValueError(f"Missing frame {frame_name} in sequence {seq_dir}")
+                if not all((d / frame_name).exists() for d in [rgb_dir, mask_dir, gt_dir]):
+                    logger.warning(f"Skipping sequence {seq_dir}: missing frame {frame_name}")
+                    frames_missing = True
+                    break
+            
+            if frames_missing:
+                continue
+                
+            valid_sequences.append(seq_dir)
+        
+        # Update video_sequences with only valid ones
+        self.video_sequences = valid_sequences
+        logger.info(f"Found {len(self.video_sequences)} valid sequences out of {len(valid_sequences)} total")
     
     def __len__(self):
         """Return number of sequences in dataset."""
