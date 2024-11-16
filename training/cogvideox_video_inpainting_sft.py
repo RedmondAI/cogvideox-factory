@@ -60,6 +60,8 @@ from utils import (
     unwrap_model,
 )
 
+from training.dataset import VideoInpaintingDataset
+
 logger = get_logger(__name__)
 
 class CogVideoXInpaintingPipeline:
@@ -984,24 +986,24 @@ def main(args):
     # Dataset and DataLoaders creation
     train_dataset = VideoInpaintingDataset(
         data_root=args.data_root,
-        split='train',
-        max_num_frames=args.max_num_frames,
-        height=720,
-        width=1280,
-        random_flip_h=args.random_flip_h,
-        random_flip_v=args.random_flip_v,
-        noise_range=args.noise_range,
+        video_dir=args.video_dir,
+        mask_dir=args.mask_dir,
+        gt_dir=args.gt_dir,
+        image_size=args.image_size,
+        num_frames=args.max_num_frames,
+        center_crop=True,
+        normalize=True
     )
     
     val_dataset = VideoInpaintingDataset(
         data_root=args.data_root,
-        split='val',
-        max_num_frames=args.max_num_frames,
-        height=720,
-        width=1280,
-        random_flip_h=0.0,  # No augmentation for validation
-        random_flip_v=0.0,
-        noise_range=None,
+        video_dir=args.video_dir,
+        mask_dir=args.mask_dir,
+        gt_dir=args.gt_dir,
+        image_size=args.image_size,
+        num_frames=args.max_num_frames,
+        center_crop=True,
+        normalize=True
     )
     
     train_dataloader = DataLoader(
