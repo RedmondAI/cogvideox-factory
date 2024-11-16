@@ -1407,10 +1407,131 @@ def test_memory_calculation():
     # We mainly want to ensure the calculation runs without error
     # Actual values are checked manually in logs
 
+def test_padding_edge_cases():
+    """Test padding with various edge cases."""
+    from cogvideox_video_inpainting_sft import pad_to_multiple, unpad
+    
+    # Test near max dimension
+    x = torch.randn(1, 3, 8, 2000, 2000)  # Near max_dim
+    with pytest.raises(ValueError, match="Input dimensions.*exceed maximum"):
+        pad_to_multiple(x)
+    
+    # Test padding that would exceed max
+    x = torch.randn(1, 3, 8, 2030, 2030)  # Would exceed max after padding
+    with pytest.raises(ValueError, match="Padded dimensions.*must be strictly less"):
+        pad_to_multiple(x)
+    
+    # Test unpadding with zero pad sizes
+    x = torch.randn(1, 3, 8, 64, 64)
+    assert torch.equal(unpad(x, (0, 0)), x)
+    
+    # Test padding and unpadding together
+    x = torch.randn(1, 3, 8, 100, 100)
+    x_padded, pad_sizes = pad_to_multiple(x)
+    x_unpadded = unpad(x_padded, pad_sizes)
+    assert torch.equal(x, x_unpadded)
+    
+    print("Padding edge cases test passed!")
+
+def test_metrics_cpu_fallback():
+    """Test metric computation with CPU fallback."""
+    from cogvideox_video_inpainting_sft import compute_metrics
+    
+    # Create test data
+    pred = torch.randn(2, 5, 3, 64, 64)
+    gt = torch.randn(2, 5, 3, 64, 64)
+    mask = torch.ones(2, 5, 1, 64, 64)
+    
+    # Test GPU computation with fallback
+    if torch.cuda.is_available():
+        metrics = compute_metrics(pred.cuda(), gt.cuda(), mask.cuda())
+        assert 'temporal_consistency' in metrics
+        assert 'masked_psnr' in metrics
+        assert 'masked_ssim' in metrics
+    
+    # Test CPU computation
+    metrics_cpu = compute_metrics(pred, gt, mask)
+    assert 'temporal_consistency' in metrics_cpu
+    assert 'masked_psnr' in metrics_cpu
+    assert 'masked_ssim' in metrics_cpu
+    
+    print("Metrics CPU fallback test passed!")
+
+def test_loss_temporal():
+    """Test loss computation with temporal consistency."""
+    from cogvideox_video_inpainting_sft import compute_loss
+    
+    # Create test data
+    model_pred = torch.randn(2, 5, 16, 32, 32)
+    noise = torch.randn(2, 5, 16, 32, 32)
+    mask = torch.ones(2, 5, 1, 32, 32)
+    
+    # Test with multiple frames (should include temporal loss)
+    loss_multi = compute_loss(model_pred, noise, mask)
+    
+    # Test with single frame (no temporal loss)
+    loss_single = compute_loss(
+        model_pred[:, :1], 
+        noise[:, :1], 
+        mask[:, :1]
+    )
+    
+    # Test with latents for perceptual loss
+    latents = torch.randn_like(model_pred)
+    loss_percept = compute_loss(model_pred, noise, mask, latents)
+    
+    print("Temporal loss test passed!")
+
+def test_text_conditioning():
+    """Test text conditioning preparation."""
+    # Create pipeline
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    pipeline = CogVideoXInpaintingPipeline(
+        vae=vae,
+        transformer=transformer,
+        scheduler=scheduler
+    )
+    
+    # Test single prompt
+    hidden_states = pipeline.prepare_encoder_hidden_states("test prompt", batch_size=1)
+    assert hidden_states.shape == (1, 1, 4096)
+    
+    # Test batch of prompts
+    hidden_states = pipeline.prepare_encoder_hidden_states(
+        ["prompt 1", "prompt 2"], 
+        batch_size=2
+    )
+    assert hidden_states.shape == (2, 1, 4096)
+    
+    # Test empty prompt
+    hidden_states = pipeline.prepare_encoder_hidden_states("", batch_size=1)
+    assert hidden_states.shape == (1, 1, 4096)
+    
+    print("Text conditioning test passed!")
+
 if __name__ == "__main__":
+    test_padding_edge_cases()
+    test_metrics_cpu_fallback()
+    test_loss_temporal()
+    test_text_conditioning()
     test_vae_shapes()
     test_transformer_shapes()
     test_scheduler_config()
-    test_end_to_end()
     test_resolution_scaling()
     test_memory_calculation()
