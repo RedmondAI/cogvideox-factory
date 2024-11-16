@@ -63,26 +63,36 @@ def test_training_components():
         height, width,
         device=device, dtype=torch.float16
     )
+
+    # First encode through VAE to get latent representation
+    with torch.no_grad():
+        vae = AutoencoderKLCogVideoX.from_pretrained(
+            "THUDM/CogVideoX-5b",
+            subfolder="vae",
+            torch_dtype=torch.float16
+        ).to(device)
+        latents = vae.encode(clean_frames).latent_dist.sample()
+        latents = latents * vae.config.scaling_factor  # [B, 16, T//2, H//8, W//8]
     
     # Convert to [B, T, C, H, W] format for transformer
-    clean_frames = clean_frames.permute(0, 2, 1, 3, 4)
+    latents = latents.permute(0, 2, 1, 3, 4)
     
-    # Project to transformer channel dimension before patch embedding
-    B, T, C, H, W = clean_frames.shape
-    clean_frames = clean_frames.reshape(-1, C, H, W)  # [B*T, C, H, W]
-    clean_frames = model.patch_embed.proj(clean_frames)  # [B*T, 16, H//2, W//2]
+    # Project through patch embedding
+    B, T, C, H, W = latents.shape
+    latents = latents.reshape(-1, C, H, W)  # [B*T, C, H, W]
+    latents = model.patch_embed.proj(latents)  # [B*T, 3072, H//2, W//2]
     
     # Reshape back maintaining [B, T, C, H, W] format
-    _, C_latent, H_latent, W_latent = clean_frames.shape
-    clean_frames = clean_frames.reshape(B, T, C_latent, H_latent, W_latent)
+    _, C_proj, H_proj, W_proj = latents.shape
+    latents = latents.reshape(B, T, C_proj, H_proj, W_proj)
     
     # Convert to [B, C, T, H, W] for scheduler operations
-    clean_frames_scheduler = clean_frames.permute(0, 2, 1, 3, 4)
+    latents_scheduler = latents.permute(0, 2, 1, 3, 4)
     
     # Create noise and add noise in scheduler format
-    noise = torch.randn_like(clean_frames_scheduler)
+    noise = torch.randn_like(latents_scheduler)
     timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
-    noisy_frames = scheduler.add_noise(clean_frames_scheduler, noise, timesteps)
+    noisy_frames = scheduler.add_noise(latents_scheduler, noise, timesteps)
     
     # Convert back to transformer format [B, T, C, H, W]
     noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
