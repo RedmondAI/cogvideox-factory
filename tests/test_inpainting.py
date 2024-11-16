@@ -302,6 +302,27 @@ def test_temporal_smoothing():
     
     print("Temporal smoothing tests passed!")
 
+def test_temporal_smoothing_edge_cases():
+    """Test temporal smoothing edge cases."""
+    from cogvideox_video_inpainting_sft import temporal_smooth
+    
+    # Test with sequence shorter than window
+    frames = torch.randn(2, 3, 3, 64, 64)  # 3 frames
+    smoothed = temporal_smooth(frames, window_size=5)
+    assert torch.equal(frames, smoothed)
+    
+    # Test with longer sequence
+    frames = torch.randn(2, 10, 3, 64, 64)  # 10 frames
+    smoothed = temporal_smooth(frames, window_size=5)
+    assert not torch.equal(frames, smoothed)  # Should be different
+    
+    # Check middle region is blended
+    mid_start = frames.shape[1] // 2 - 2
+    mid_end = mid_start + 5
+    assert not torch.equal(frames[:, mid_start:mid_end], smoothed[:, mid_start:mid_end])
+    
+    print("Temporal smoothing edge cases test passed!")
+
 def test_metrics():
     """Test metric computation."""
     from cogvideox_video_inpainting_sft import compute_metrics
@@ -1525,11 +1546,169 @@ def test_text_conditioning():
     
     print("Text conditioning test passed!")
 
+def test_temporal_smoothing():
+    """Test temporal smoothing function."""
+    from cogvideox_video_inpainting_sft import temporal_smooth
+    
+    # Create test sequence with sharp transition in middle
+    seq = torch.zeros(1, 10, 3, 64, 64)
+    seq[:, 5:] = 1.0  # Sharp transition at frame 5
+    
+    # Apply smoothing with window size 3
+    window_size = 3
+    smoothed = temporal_smooth(seq, window_size=window_size)
+    
+    # Test 1: Check that frames far from transition are unchanged
+    assert torch.allclose(smoothed[:, :3], seq[:, :3]), "Early frames should be unchanged"
+    assert torch.allclose(smoothed[:, 7:], seq[:, 7:]), "Late frames should be unchanged"
+    
+    # Test 2: Check that transition region is smoothed
+    mid_start = seq.shape[1] // 2 - window_size // 2
+    mid_end = mid_start + window_size
+    transition_region = smoothed[:, mid_start:mid_end]
+    
+    # The smoothed values should be between the original values (0 and 1)
+    assert not torch.allclose(transition_region, seq[:, mid_start:mid_end]), \
+        "Transition region should be smoothed"
+    assert torch.all(transition_region >= 0.0) and torch.all(transition_region <= 1.0), \
+        "Smoothed values should be between 0 and 1"
+    
+    # Test 3: Check monotonic increase in transition region
+    transition_mean = transition_region.mean(dim=(0,2,3,4))  # Average across batch, channels, height, width
+    assert torch.all(transition_mean[1:] >= transition_mean[:-1]), \
+        "Transition should be monotonically increasing"
+    
+    print("Temporal smoothing tests passed!")
+
+def test_temporal_smoothing_edge_cases():
+    """Test temporal smoothing edge cases."""
+    from cogvideox_video_inpainting_sft import temporal_smooth
+    
+    # Test with sequence shorter than window
+    frames = torch.randn(2, 3, 3, 64, 64)  # 3 frames
+    smoothed = temporal_smooth(frames, window_size=5)
+    assert torch.equal(frames, smoothed)
+    
+    # Test with longer sequence
+    frames = torch.randn(2, 10, 3, 64, 64)  # 10 frames
+    smoothed = temporal_smooth(frames, window_size=5)
+    assert not torch.equal(frames, smoothed)  # Should be different
+    
+    # Check middle region is blended
+    mid_start = frames.shape[1] // 2 - 2
+    mid_end = mid_start + 5
+    assert not torch.equal(frames[:, mid_start:mid_end], smoothed[:, mid_start:mid_end])
+    
+    print("Temporal smoothing edge cases test passed!")
+
+def test_training_components():
+    """Test training loop components."""
+    # Create models and optimizer
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    
+    # Test noise addition
+    clean_frames = torch.randn(2, 3, 8, 64, 64, device=device)
+    noise = torch.randn_like(clean_frames)
+    timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (2,), device=device)
+    noisy_frames = scheduler.add_noise(clean_frames, noise, timesteps)
+    
+    # Test model forward pass
+    noise_pred = model(
+        hidden_states=noisy_frames,
+        timestep=timesteps,
+        encoder_hidden_states=None,
+    ).sample
+    
+    assert noise_pred.shape == noise.shape
+    
+    # Test gradient computation
+    loss = F.mse_loss(noise_pred, noise)
+    loss.backward()
+    
+    # Test optimizer step
+    optimizer.step()
+    optimizer.zero_grad()
+    
+    print("Training components test passed!")
+
+def test_validation_logging():
+    """Test validation logging functionality."""
+    from cogvideox_video_inpainting_sft import log_validation
+    import os
+    import shutil
+    
+    # Create test output directory
+    test_output = "test_output"
+    os.makedirs(test_output, exist_ok=True)
+    
+    # Create test pipeline
+    pipeline = CogVideoXInpaintingPipeline(
+        vae=AutoencoderKLCogVideoX.from_pretrained(
+            "THUDM/CogVideoX-5b",
+            subfolder="vae",
+            torch_dtype=torch.float16
+        ).to(device),
+        transformer=CogVideoXTransformer3DModel.from_pretrained(
+            "THUDM/CogVideoX-5b",
+            subfolder="transformer",
+            torch_dtype=torch.float16
+        ).to(device),
+        scheduler=CogVideoXDPMScheduler.from_pretrained(
+            "THUDM/CogVideoX-5b",
+            subfolder="scheduler"
+        )
+    )
+    
+    # Create test data
+    validation_data = {
+        "rgb": torch.randn(2, 3, 8, 64, 64, device=device),
+        "mask": torch.ones(2, 1, 8, 64, 64, device=device),
+    }
+    
+    # Mock accelerator
+    class MockAccelerator:
+        def is_main_process(self): return True
+        def get_eval_dataloader(self): return [validation_data]
+    
+    accelerator = MockAccelerator()
+    
+    # Test logging
+    class Args:
+        num_inference_steps = 20
+        output_dir = test_output
+        fps = 24
+        tracker_project_name = None
+    
+    log_validation(accelerator, pipeline, Args(), epoch=0, validation_data=validation_data)
+    
+    # Check output files exist
+    assert os.path.exists(os.path.join(test_output, "validation_epoch_0_sample_0.mp4"))
+    
+    # Cleanup
+    shutil.rmtree(test_output)
+    
+    print("Validation logging test passed!")
+
 if __name__ == "__main__":
     test_padding_edge_cases()
     test_metrics_cpu_fallback()
     test_loss_temporal()
     test_text_conditioning()
+    test_temporal_smoothing()
+    test_temporal_smoothing_edge_cases()
+    test_training_components()
+    test_validation_logging()
     test_vae_shapes()
     test_transformer_shapes()
     test_scheduler_config()
