@@ -201,3 +201,137 @@ def test_loss_temporal():
     assert not torch.isnan(temp_loss).any(), "Temporal loss contains NaN values"
     
     print("Temporal loss test passed!")
+
+def test_padding_functions():
+    """Test padding and unpadding functions."""
+    # Test input
+    x = torch.randn(1, 3, 16, 100, 100, device=device)
+    
+    # Test padding
+    padded, pad_sizes = pad_to_multiple(x, multiple=64, max_dim=2048)
+    pad_h, pad_w = pad_sizes
+    
+    # Verify padding
+    assert padded.shape[-2] % 64 == 0, "Height not padded to multiple"
+    assert padded.shape[-1] % 64 == 0, "Width not padded to multiple"
+    assert padded.shape[-2] == 128, f"Expected padded height 128, got {padded.shape[-2]}"
+    assert padded.shape[-1] == 128, f"Expected padded width 128, got {padded.shape[-1]}"
+    
+    # Test unpadding
+    unpadded = unpad(padded, pad_sizes)
+    assert torch.allclose(unpadded, x), "Unpadding did not restore original tensor"
+    
+    print("Padding functions test passed!")
+
+def test_vae_temporal_handling():
+    """Test VAE temporal output handling."""
+    # Create dummy VAE output with extra temporal frames
+    B, C, T, H, W = 1, 3, 8, 32, 32
+    decoded = torch.randn(B, C, T, H, W, device=device)
+    target_frames = 5
+    
+    # Test temporal handling
+    processed = handle_vae_temporal_output(decoded, target_frames)
+    
+    # Verify output
+    assert processed.shape[2] == target_frames, \
+        f"Expected {target_frames} frames, got {processed.shape[2]}"
+    assert processed.shape[:2] == decoded.shape[:2], "Batch or channel dimension changed"
+    assert processed.shape[3:] == decoded.shape[3:], "Spatial dimensions changed"
+    
+    print("VAE temporal handling test passed!")
+
+def test_metrics_computation():
+    """Test metrics computation."""
+    # Create test inputs
+    B, T, C, H, W = 1, 4, 3, 32, 32
+    pred = torch.rand(B, T, C, H, W, device=device)
+    gt = torch.rand(B, T, C, H, W, device=device)
+    mask = torch.ones(B, T, 1, H, W, device=device)
+    mask[:, :, :, H//4:3*H//4, W//4:3*W//4] = 0  # Create hole in middle
+    
+    # Compute metrics
+    metrics = compute_metrics(pred, gt, mask)
+    
+    # Verify metrics
+    assert 'masked_psnr' in metrics, "PSNR not computed"
+    assert 'masked_ssim' in metrics, "SSIM not computed"
+    assert 'temporal_consistency' in metrics, "Temporal consistency not computed"
+    assert all(not torch.isnan(torch.tensor(v)) for v in metrics.values()), \
+        "Metrics contain NaN values"
+    
+    print("Metrics computation test passed!")
+
+def test_loss_functions():
+    """Test all loss functions."""
+    # Create test inputs
+    B, T, C, H, W = 2, 4, 16, 32, 32
+    model_pred = torch.randn(B, T, C, H, W, device=device)
+    noise = torch.randn(B, T, C, H, W, device=device)
+    mask = torch.ones(B, T, 1, H, W, device=device)
+    mask[:, :, :, H//4:3*H//4, W//4:3*W//4] = 0
+    latents = torch.randn(B, T, C, H, W, device=device)
+    
+    # Test main loss function
+    loss = compute_loss(model_pred, noise, mask, latents)
+    assert not torch.isnan(loss).any(), "Main loss contains NaN values"
+    
+    # Test v-prediction loss
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    timesteps = torch.randint(0, 1000, (B,), device=device)
+    
+    loss_v = compute_loss_v_pred_with_snr(
+        model_pred, noise, timesteps, scheduler,
+        mask=mask, noisy_frames=latents
+    )
+    assert not torch.isnan(loss_v).any(), "V-prediction loss contains NaN values"
+    
+    print("Loss functions test passed!")
+
+def test_pipeline_components():
+    """Test pipeline components."""
+    pipeline = CogVideoXInpaintingPipeline(
+        vae=AutoencoderKLCogVideoX.from_pretrained(
+            "THUDM/CogVideoX-5b",
+            subfolder="vae",
+            torch_dtype=torch.float16
+        ),
+        transformer=CogVideoXTransformer3DModel.from_pretrained(
+            "THUDM/CogVideoX-5b",
+            subfolder="transformer",
+            torch_dtype=torch.float16
+        ),
+        scheduler=CogVideoXDPMScheduler.from_pretrained(
+            "THUDM/CogVideoX-5b",
+            subfolder="scheduler"
+        )
+    )
+    
+    # Test dimension validation
+    B, C, T, H, W = 1, 3, 16, 128, 128
+    video = torch.randn(B, C, T, H, W, device=device)
+    mask = torch.ones(B, 1, T, H, W, device=device)
+    mask[:, :, :, H//4:3*H//4, W//4:3*W//4] = 0
+    
+    pipeline.validate_dimensions(video, mask)
+    
+    # Test mask preparation
+    prepared_mask = pipeline.prepare_mask(mask)
+    assert prepared_mask.shape[2] == T // pipeline.transformer.config.temporal_compression_ratio, \
+        "Temporal dimension not properly compressed in mask"
+    
+    # Test latent preparation
+    latents = pipeline.prepare_latents(B, T, H, W)
+    assert latents.shape[1] == pipeline.transformer.config.in_channels, \
+        "Wrong number of channels in latents"
+    
+    # Test boundary continuity
+    continuity = pipeline.check_boundary_continuity(video, H//2, window_size=8)
+    mean_diff, max_diff = continuity
+    assert mean_diff is not None and max_diff is not None, \
+        "Boundary continuity check failed"
+    
+    print("Pipeline components test passed!")
