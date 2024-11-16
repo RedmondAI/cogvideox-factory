@@ -11,6 +11,19 @@ from diffusers.utils.torch_utils import randn_tensor
 from ..utils import create_layer_norm
 import torch.nn.functional as F
 
+# Import training functions
+from training.cogvideox_video_inpainting_sft import (
+    pad_to_multiple,
+    unpad,
+    temporal_smooth,
+    compute_metrics,
+    compute_loss,
+    compute_loss_v_pred,
+    compute_loss_v_pred_with_snr,
+    CogVideoXInpaintingPipeline,
+    handle_vae_temporal_output
+)
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=None, noisy_frames=None):
@@ -62,6 +75,116 @@ def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=N
         return F.mse_loss(masked_pred, masked_target)
     
     return F.mse_loss(noise_pred, v_target)
+
+def test_loss_temporal():
+    """Test temporal loss computation."""
+    # Create dummy predictions and targets with model dimensions
+    B = 2
+    C = 16  # Model latent channels
+    T = 49 // 4  # Frames after temporal compression
+    H = 60 // 8  # Height in latent space
+    W = 90 // 8  # Width in latent space
+    
+    pred = torch.randn(B, C, T, H, W, device=device)
+    target = torch.randn(B, C, T, H, W, device=device)
+    
+    # Test temporal difference loss
+    temp_diff_pred = pred[:, :, 1:] - pred[:, :, :-1]
+    temp_diff_target = target[:, :, 1:] - target[:, :, :-1]
+    
+    temp_loss = torch.nn.functional.mse_loss(temp_diff_pred, temp_diff_target)
+    assert not torch.isnan(temp_loss).any(), "Temporal loss contains NaN values"
+    
+    print("Temporal loss test passed!")
+
+def test_padding_functions():
+    """Test padding and unpadding functions."""
+    # Test input
+    x = torch.randn(1, 3, 16, 100, 100, device=device)
+    
+    # Test padding
+    padded, pad_sizes = pad_to_multiple(x, multiple=64, max_dim=2048)
+    pad_h, pad_w = pad_sizes
+    
+    # Verify padding
+    assert padded.shape[-2] % 64 == 0, "Height not padded to multiple"
+    assert padded.shape[-1] % 64 == 0, "Width not padded to multiple"
+    assert padded.shape[-2] == 128, f"Expected padded height 128, got {padded.shape[-2]}"
+    assert padded.shape[-1] == 128, f"Expected padded width 128, got {padded.shape[-1]}"
+    
+    # Test unpadding
+    unpadded = unpad(padded, pad_sizes)
+    assert torch.allclose(unpadded, x), "Unpadding did not restore original tensor"
+    
+    print("Padding functions test passed!")
+
+def test_vae_temporal_handling():
+    """Test VAE temporal output handling."""
+    # Create dummy VAE output with extra temporal frames
+    B, C, T, H, W = 1, 3, 8, 32, 32
+    decoded = torch.randn(B, C, T, H, W, device=device)
+    target_frames = 5
+    
+    # Test temporal handling
+    processed = handle_vae_temporal_output(decoded, target_frames)
+    
+    # Verify output
+    assert processed.shape[2] == target_frames, \
+        f"Expected {target_frames} frames, got {processed.shape[2]}"
+    assert processed.shape[:2] == decoded.shape[:2], "Batch or channel dimension changed"
+    assert processed.shape[3:] == decoded.shape[3:], "Spatial dimensions changed"
+    
+    print("VAE temporal handling test passed!")
+
+def test_metrics_computation():
+    """Test metrics computation."""
+    # Create test inputs
+    B, T, C, H, W = 1, 4, 3, 32, 32
+    pred = torch.rand(B, T, C, H, W, device=device)
+    gt = torch.rand(B, T, C, H, W, device=device)
+    mask = torch.ones(B, T, 1, H, W, device=device)
+    mask[:, :, :, H//4:3*H//4, W//4:3*W//4] = 0  # Create hole in middle
+    
+    # Compute metrics
+    metrics = compute_metrics(pred, gt, mask)
+    
+    # Verify metrics
+    assert 'masked_psnr' in metrics, "PSNR not computed"
+    assert 'masked_ssim' in metrics, "SSIM not computed"
+    assert 'temporal_consistency' in metrics, "Temporal consistency not computed"
+    assert all(not torch.isnan(torch.tensor(v)) for v in metrics.values()), \
+        "Metrics contain NaN values"
+    
+    print("Metrics computation test passed!")
+
+def test_loss_functions():
+    """Test all loss functions."""
+    # Create test inputs
+    B, T, C, H, W = 2, 4, 16, 32, 32
+    model_pred = torch.randn(B, T, C, H, W, device=device)
+    noise = torch.randn(B, T, C, H, W, device=device)
+    mask = torch.ones(B, T, 1, H, W, device=device)
+    mask[:, :, :, H//4:3*H//4, W//4:3*W//4] = 0
+    latents = torch.randn(B, T, C, H, W, device=device)
+    
+    # Test main loss function
+    loss = compute_loss(model_pred, noise, mask, latents)
+    assert not torch.isnan(loss).any(), "Main loss contains NaN values"
+    
+    # Test v-prediction loss
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    timesteps = torch.randint(0, 1000, (B,), device=device)
+    
+    loss_v = compute_loss_v_pred_with_snr(
+        model_pred, noise, timesteps, scheduler,
+        mask=mask, noisy_frames=latents
+    )
+    assert not torch.isnan(loss_v).any(), "V-prediction loss contains NaN values"
+    
+    print("Loss functions test passed!")
 
 def test_training_components():
     """Test training loop components."""
@@ -180,116 +303,6 @@ def test_training_components():
     optimizer.zero_grad()
     
     print("Training components test passed!")
-
-def test_loss_temporal():
-    """Test temporal loss computation."""
-    # Create dummy predictions and targets with model dimensions
-    B = 2
-    C = 16  # Model latent channels
-    T = 49 // 4  # Frames after temporal compression
-    H = 60 // 8  # Height in latent space
-    W = 90 // 8  # Width in latent space
-    
-    pred = torch.randn(B, C, T, H, W, device=device)
-    target = torch.randn(B, C, T, H, W, device=device)
-    
-    # Test temporal difference loss
-    temp_diff_pred = pred[:, :, 1:] - pred[:, :, :-1]
-    temp_diff_target = target[:, :, 1:] - target[:, :, :-1]
-    
-    temp_loss = torch.nn.functional.mse_loss(temp_diff_pred, temp_diff_target)
-    assert not torch.isnan(temp_loss).any(), "Temporal loss contains NaN values"
-    
-    print("Temporal loss test passed!")
-
-def test_padding_functions():
-    """Test padding and unpadding functions."""
-    # Test input
-    x = torch.randn(1, 3, 16, 100, 100, device=device)
-    
-    # Test padding
-    padded, pad_sizes = pad_to_multiple(x, multiple=64, max_dim=2048)
-    pad_h, pad_w = pad_sizes
-    
-    # Verify padding
-    assert padded.shape[-2] % 64 == 0, "Height not padded to multiple"
-    assert padded.shape[-1] % 64 == 0, "Width not padded to multiple"
-    assert padded.shape[-2] == 128, f"Expected padded height 128, got {padded.shape[-2]}"
-    assert padded.shape[-1] == 128, f"Expected padded width 128, got {padded.shape[-1]}"
-    
-    # Test unpadding
-    unpadded = unpad(padded, pad_sizes)
-    assert torch.allclose(unpadded, x), "Unpadding did not restore original tensor"
-    
-    print("Padding functions test passed!")
-
-def test_vae_temporal_handling():
-    """Test VAE temporal output handling."""
-    # Create dummy VAE output with extra temporal frames
-    B, C, T, H, W = 1, 3, 8, 32, 32
-    decoded = torch.randn(B, C, T, H, W, device=device)
-    target_frames = 5
-    
-    # Test temporal handling
-    processed = handle_vae_temporal_output(decoded, target_frames)
-    
-    # Verify output
-    assert processed.shape[2] == target_frames, \
-        f"Expected {target_frames} frames, got {processed.shape[2]}"
-    assert processed.shape[:2] == decoded.shape[:2], "Batch or channel dimension changed"
-    assert processed.shape[3:] == decoded.shape[3:], "Spatial dimensions changed"
-    
-    print("VAE temporal handling test passed!")
-
-def test_metrics_computation():
-    """Test metrics computation."""
-    # Create test inputs
-    B, T, C, H, W = 1, 4, 3, 32, 32
-    pred = torch.rand(B, T, C, H, W, device=device)
-    gt = torch.rand(B, T, C, H, W, device=device)
-    mask = torch.ones(B, T, 1, H, W, device=device)
-    mask[:, :, :, H//4:3*H//4, W//4:3*W//4] = 0  # Create hole in middle
-    
-    # Compute metrics
-    metrics = compute_metrics(pred, gt, mask)
-    
-    # Verify metrics
-    assert 'masked_psnr' in metrics, "PSNR not computed"
-    assert 'masked_ssim' in metrics, "SSIM not computed"
-    assert 'temporal_consistency' in metrics, "Temporal consistency not computed"
-    assert all(not torch.isnan(torch.tensor(v)) for v in metrics.values()), \
-        "Metrics contain NaN values"
-    
-    print("Metrics computation test passed!")
-
-def test_loss_functions():
-    """Test all loss functions."""
-    # Create test inputs
-    B, T, C, H, W = 2, 4, 16, 32, 32
-    model_pred = torch.randn(B, T, C, H, W, device=device)
-    noise = torch.randn(B, T, C, H, W, device=device)
-    mask = torch.ones(B, T, 1, H, W, device=device)
-    mask[:, :, :, H//4:3*H//4, W//4:3*W//4] = 0
-    latents = torch.randn(B, T, C, H, W, device=device)
-    
-    # Test main loss function
-    loss = compute_loss(model_pred, noise, mask, latents)
-    assert not torch.isnan(loss).any(), "Main loss contains NaN values"
-    
-    # Test v-prediction loss
-    scheduler = CogVideoXDPMScheduler.from_pretrained(
-        "THUDM/CogVideoX-5b",
-        subfolder="scheduler"
-    )
-    timesteps = torch.randint(0, 1000, (B,), device=device)
-    
-    loss_v = compute_loss_v_pred_with_snr(
-        model_pred, noise, timesteps, scheduler,
-        mask=mask, noisy_frames=latents
-    )
-    assert not torch.isnan(loss_v).any(), "V-prediction loss contains NaN values"
-    
-    print("Loss functions test passed!")
 
 def test_pipeline_components():
     """Test pipeline components."""
