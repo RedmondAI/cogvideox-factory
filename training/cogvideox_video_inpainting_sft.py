@@ -857,7 +857,7 @@ def train_loop(
     
     # Create layer norm for hidden states
     hidden_norm = create_layer_norm(
-        model.config.hidden_size,
+        model.patch_embed.proj.out_channels,  # Use output channels from patch embedding
         model.config,
         model.device,
         model_dtype

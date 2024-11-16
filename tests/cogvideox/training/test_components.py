@@ -124,7 +124,7 @@ def test_training_components():
     
     # Apply layer normalization to hidden states
     hidden_norm = create_layer_norm(
-        model.config.hidden_size,
+        C_latent,  # Use output channels from patch embedding (3072)
         model.config,
         model.device,
         torch.float16
