@@ -72,27 +72,34 @@ def test_training_components():
             torch_dtype=torch.float16
         ).to(device)
         
-        # Handle VAE's temporal expansion behavior (1 -> 8 frames)
-        # The VAE expands each input frame to 8 frames in the output
-        # This is a known behavior documented in the model analysis
+        # VAE has 8x spatial downsampling
+        vae_spatial_ratio = 8
         latents = vae.encode(clean_frames).latent_dist.sample()
         latents = latents * vae.config.scaling_factor
         
         # Calculate expected temporal dimensions
-        input_frames_per_chunk = 1
-        vae_temporal_expansion = 8  # VAE expands 1 frame to 8 frames
-        expanded_frames = latents.shape[2]
         target_frames = num_frames // model.config.temporal_compression_ratio
         
-        # Handle temporal expansion - take center frames
-        if expanded_frames > target_frames:
-            start_idx = (expanded_frames - target_frames) // 2
+        # Handle temporal compression
+        if latents.shape[2] > target_frames:
+            start_idx = (latents.shape[2] - target_frames) // 2
             latents = latents[:, :, start_idx:start_idx + target_frames]
         
         # Verify dimensions match model analysis specifications
         assert latents.shape[1] == 16, f"Expected 16 latent channels (from model analysis), got {latents.shape[1]}"
         assert latents.shape[2] == target_frames, \
             f"Expected {target_frames} frames after compression (model analysis), got {latents.shape[2]}"
+        
+        # Handle patch embedding
+        patch_size = model.config.patch_size
+        expected_h = height // (vae_spatial_ratio * patch_size)
+        expected_w = width // (vae_spatial_ratio * patch_size)
+        
+        # Verify spatial dimensions after VAE and patch embedding
+        assert latents.shape[3] == height // vae_spatial_ratio, \
+            f"Expected height {height // vae_spatial_ratio}, got {latents.shape[3]}"
+        assert latents.shape[4] == width // vae_spatial_ratio, \
+            f"Expected width {width // vae_spatial_ratio}, got {latents.shape[4]}"
     
     # Add noise to latents in [B, C, T, H, W] format
     noise = torch.randn_like(latents)
@@ -115,6 +122,12 @@ def test_training_components():
     # Verify output shape matches input shape
     assert noise_pred.shape == noisy_frames.shape, \
         f"Model output shape {noise_pred.shape} doesn't match input shape {noisy_frames.shape}"
+    
+    # Verify spatial dimensions
+    expected_h = height // (vae_spatial_ratio * patch_size)
+    expected_w = width // (vae_spatial_ratio * patch_size)
+    assert noise_pred.shape[3] == expected_h and noise_pred.shape[4] == expected_w, \
+        f"Expected spatial dimensions ({expected_h}, {expected_w}), got ({noise_pred.shape[3]}, {noise_pred.shape[4]})"
     
     # Verify no NaN values from activations
     assert not torch.isnan(noise_pred).any(), "Model output contains NaN values"
