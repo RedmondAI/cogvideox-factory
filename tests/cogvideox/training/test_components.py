@@ -74,13 +74,13 @@ def test_training_components():
         latents = vae.encode(clean_frames).latent_dist.sample()
         latents = latents * vae.config.scaling_factor  # [B, 16, T//2, H//8, W//8]
     
-    # Convert to [B, T, C, H, W] format for transformer
-    latents = latents.permute(0, 2, 1, 3, 4)
-    
-    # Create noisy latents in transformer format
+    # Add noise to latents in [B, C, T, H, W] format
     noise = torch.randn_like(latents)
     timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
-    noisy_frames = scheduler.add_noise(latents.permute(0, 1, 2, 3, 4), noise, timesteps).permute(0, 2, 1, 3, 4)
+    noisy_latents = scheduler.add_noise(latents, noise, timesteps)
+    
+    # Convert to [B, T, C, H, W] format for transformer
+    noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
     
     # Create dummy encoder hidden states
     encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
