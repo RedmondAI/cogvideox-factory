@@ -816,8 +816,8 @@ def test_training_step():
         )
         model_output = model(
             sample=torch.cat([noisy_latents, latent_mask], dim=2),
-            encoder_hidden_states=encoder_hidden_states,
             timestep=timesteps,
+            encoder_hidden_states=encoder_hidden_states,
         )
         
         # Verify output shape matches latent shape
@@ -1122,9 +1122,9 @@ def test_transformer_shapes():
     encoder_hidden_states = torch.randn(B, 1, 4096, device=device, dtype=torch.float16)
     
     output = transformer(
-        latents.permute(0, 2, 1, 3, 4),  # [B, T, C, H, W] for transformer
-        timesteps,
-        encoder_hidden_states,
+        sample=latents.permute(0, 2, 1, 3, 4),  # [B, T, C, H, W] for transformer
+        timestep=timesteps,
+        encoder_hidden_states=encoder_hidden_states,
     ).sample
     
     # Check output shape matches input
@@ -1214,7 +1214,11 @@ def test_end_to_end():
     
     # Run transformer
     latents = latents.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W] for transformer
-    output = transformer(latents, timestep=timesteps, encoder_hidden_states=encoder_hidden_states)
+    output = transformer(
+        sample=latents,
+        timestep=timesteps,
+        encoder_hidden_states=encoder_hidden_states,
+    )
     if isinstance(output, tuple):
         output = output[0]
     
