@@ -376,71 +376,70 @@ def test_dataset():
 
 def test_model_modification():
     """Test the model input channel modification and memory optimizations."""
-    from diffusers import CogVideoXTransformer3DModel
-    import torch.nn as nn
+    from diffusers import CogVideoXTransformer3DModel, AutoencoderKLCogVideoX
     
-    # Create model from pretrained weights
-    model = CogVideoXTransformer3DModel.from_pretrained(
+    # Create test model
+    vae = AutoencoderKLCogVideoX.from_pretrained(
         "THUDM/CogVideoX-5b",  # Using 5b model for better quality
-        subfolder="transformer",
-        revision=None,
+        subfolder="vae",
         torch_dtype=torch.bfloat16,  # 5b model uses bfloat16
     )
     
-    # Enable memory optimizations
-    if hasattr(model.config, 'use_memory_efficient_attention'):
-        model.config.use_memory_efficient_attention = True
-        model.config.attention_mode = "xformers"
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.bfloat16,
+    )
     
-    # Enable gradient checkpointing
-    model.gradient_checkpointing = True
-    model.config.gradient_checkpointing_steps = 2
+    # Get VAE latent channels
+    vae_latent_channels = vae.config.latent_channels
+    assert vae_latent_channels == 8, "Expected 8 latent channels for CogVideoX-5b"
     
-    # Test memory optimizations
-    assert model.gradient_checkpointing, "Gradient checkpointing not enabled in model"
-    assert hasattr(model, 'gradient_checkpointing'), "Model doesn't support gradient checkpointing"
+    # Test input channel modification
+    old_proj = transformer.patch_embed.proj
+    original_in_channels = old_proj.weight.size(1)
     
-    # Get the input projection layer from patch embedding
-    old_proj = model.patch_embed.proj
-    assert isinstance(old_proj, nn.Conv2d), "Expected Conv2d for patch embedding projection"
-    
-    # Create new projection with extra channel for mask
-    original_in_channels = old_proj.weight.size(1)  # Get actual number of input channels
-    new_proj = nn.Conv2d(
-        original_in_channels + 1,  # Add mask channel to existing channels
+    new_proj = torch.nn.Conv2d(
+        vae_latent_channels + 1,  # Add mask channel to latent channels
         old_proj.out_channels,
         kernel_size=old_proj.kernel_size,
         stride=old_proj.stride,
         padding=old_proj.padding,
     ).to(dtype=torch.bfloat16)  # Match model precision
     
-    # Initialize new weights
     with torch.no_grad():
-        # Copy all existing channels
-        new_proj.weight[:, :original_in_channels] = old_proj.weight
+        # Copy latent channel weights
+        new_proj.weight[:, :vae_latent_channels] = old_proj.weight[:, :vae_latent_channels]
         # Initialize new mask channel to 0
-        new_proj.weight[:, original_in_channels:] = 0
-        new_proj.bias = nn.Parameter(old_proj.bias.clone())
+        new_proj.weight[:, vae_latent_channels:] = 0
+        new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
     
-    # Replace the projection layer
-    model.patch_embed.proj = new_proj
+    transformer.patch_embed.proj = new_proj
     
-    # Test forward pass with chunked input
-    batch_size, chunk_size = 1, 64  # Increased chunk size to match training
-    # Create input with correct number of channels (original + mask)
-    test_input = torch.randn(batch_size, chunk_size, original_in_channels + 1, 64, 64, dtype=torch.bfloat16)
-    encoder_hidden_states = torch.randn(batch_size, chunk_size, model.config.hidden_size, dtype=torch.bfloat16)
-    timestep = torch.zeros(batch_size, dtype=torch.long)
+    # Test memory optimizations
+    transformer.gradient_checkpointing_enable()
+    assert transformer.is_gradient_checkpointing, "Gradient checkpointing should be enabled"
     
-    with torch.amp.autocast('cuda', dtype=torch.bfloat16):  # Test with mixed precision
-        output = model(
-            test_input,
+    # Test input tensor shapes
+    B, T, C, H, W = 1, 32, vae_latent_channels, 90, 160
+    latents = torch.randn(B, T, C, H, W)
+    mask = torch.randn(B, T, 1, H, W)
+    combined = torch.cat([latents, mask], dim=2)
+    
+    # Test forward pass
+    timesteps = torch.tensor([0])
+    encoder_hidden_states = torch.randn(B, T, transformer.config.hidden_size)
+    
+    with torch.amp.autocast('cuda', enabled=True):
+        output = transformer(
+            sample=combined,
+            timestep=timesteps,
             encoder_hidden_states=encoder_hidden_states,
-            timestep=timestep,
         )
     
-    assert output.shape == (batch_size, chunk_size, original_in_channels, 64, 64), f"Wrong output shape: {output.shape}"
-    assert output.dtype == torch.bfloat16, f"Wrong output dtype: {output.dtype}"
+    assert output.shape == latents.shape, f"Expected shape {latents.shape}, got {output.shape}"
+    assert not torch.isnan(output).any(), "Output contains NaN values"
+    
     print("Model modification tests passed!")
 
 def test_pipeline():
@@ -451,9 +450,9 @@ def test_pipeline():
     
     # Load models
     vae = AutoencoderKLCogVideoX.from_pretrained(
-        "THUDM/CogVideoX-5b",
+        "THUDM/CogVideoX-5b",  # Using 5b model for better quality
         subfolder="vae",
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,  # 5b model uses bfloat16
     )
     
     transformer = CogVideoXTransformer3DModel.from_pretrained(
@@ -714,69 +713,325 @@ def test_training_step():
     
     # Create model with inpainting modification
     model = CogVideoXTransformer3DModel(
-        in_channels=3,
-        out_channels=3,
+        in_channels=8,  # VAE latent channels
+        out_channels=8,
         num_layers=1,
         num_attention_heads=1,
         hidden_size=768,  # Use hidden_size instead of cross_attention_dim
     )
+    
+    # Modify input projection for mask channel
     old_proj = model.patch_embed.proj
     new_proj = torch.nn.Conv2d(
-        old_proj.in_channels + 1,
+        9,  # 8 latent channels + 1 mask channel
         old_proj.out_channels,
         kernel_size=old_proj.kernel_size,
         stride=old_proj.stride,
         padding=old_proj.padding,
     )
     with torch.no_grad():
-        new_proj.weight[:, :3] = old_proj.weight
-        new_proj.weight[:, 3:] = 0
+        new_proj.weight[:, :8] = old_proj.weight[:, :8]  # Copy VAE latent weights
+        new_proj.weight[:, 8:] = 0  # Zero-initialize mask channel
         new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
     model.patch_embed.proj = new_proj
+    
+    # Enable memory optimizations
+    model.gradient_checkpointing_enable()
     
     # Create optimizer and scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     noise_scheduler = CogVideoXDPMScheduler()
+    
+    # Configure scheduler for better inpainting
+    noise_scheduler.config.prediction_type = "v_prediction"
+    noise_scheduler.config.num_train_timesteps = 1000
+    noise_scheduler.config.beta_schedule = "scaled_linear"
+    noise_scheduler.config.steps_offset = 1
+    noise_scheduler.config.clip_sample = False
     
     # Get test batch
     batch = dataset[0]
     rgb = batch["rgb"].unsqueeze(0)
     mask = batch["mask"].unsqueeze(0)
     
+    # Simulate VAE encoding
+    latents = torch.randn(rgb.shape[0], rgb.shape[1], 8, rgb.shape[3]//8, rgb.shape[4]//8)
+    
     # Training step with mixed precision
     model.train()
     with torch.amp.autocast('cuda', enabled=True):
-        # Add noise to input
-        noise = torch.randn_like(rgb)
-        timesteps = torch.randint(0, noise_scheduler.num_train_timesteps, (rgb.shape[0],))
-        noisy_rgb = noise_scheduler.add_noise(rgb, noise, timesteps)
+        # Add noise to latents
+        noise = torch.randn_like(latents)
+        timesteps = torch.randint(0, noise_scheduler.num_train_timesteps, (latents.shape[0],))
+        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+        
+        # Resize mask to match latent resolution
+        latent_mask = F.interpolate(mask, size=latents.shape[-2:], mode='nearest')
         
         # Forward pass
         encoder_hidden_states = torch.randn(
-            rgb.shape[0],
-            rgb.shape[1],
+            latents.shape[0],
+            latents.shape[1],
             768,  # Match hidden_size
         )
         model_output = model(
-            sample=torch.cat([noisy_rgb, mask], dim=2),
+            sample=torch.cat([noisy_latents, latent_mask], dim=2),
             encoder_hidden_states=encoder_hidden_states,
             timestep=timesteps,
         )
         
-        # Compute loss
-        loss = F.mse_loss(model_output, noise)
+        # Compute loss with temporal consistency
+        loss = compute_loss(model_output, noise, latent_mask, latents)
         
-        # Backward pass
+        # Backward pass with gradient checkpointing
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         optimizer.zero_grad()
     
     assert not torch.isnan(loss), "Loss should not be NaN"
+    assert loss.item() > 0, "Loss should be positive"
+    
+    # Test memory optimizations
+    assert model.is_gradient_checkpointing, "Gradient checkpointing should be enabled"
     
     # Cleanup
     shutil.rmtree(test_dir)
+    torch.cuda.empty_cache()
     
     print("Training step test passed!")
+
+def test_full_training_cycle():
+    """Test a complete mini-training cycle to verify all components work together."""
+    import torch.nn.functional as F
+    from diffusers import CogVideoXDPMScheduler, CogVideoXTransformer3DModel, AutoencoderKLCogVideoX
+    import shutil
+    from accelerate import Accelerator
+    from accelerate.utils import set_seed, DistributedDataParallelKwargs
+    
+    # Set seed for reproducibility
+    set_seed(42)
+    
+    # Create test data
+    test_dir = Path("assets/inpainting_test_full")
+    if test_dir.exists():
+        shutil.rmtree(test_dir)
+    test_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create multiple sequences for proper training simulation
+    for i in range(3):
+        create_test_data(test_dir, sequence_name=f"sequence_{i:03d}", num_frames=64)
+    
+    # Initialize accelerator
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(
+        gradient_accumulation_steps=2,
+        mixed_precision="bf16",
+        kwargs_handlers=[ddp_kwargs],
+    )
+    
+    # Create datasets
+    from dataset import VideoInpaintingDataset
+    train_dataset = VideoInpaintingDataset(
+        data_root=str(test_dir),
+        split='train',
+        train_ratio=0.7,
+        val_ratio=0.3,
+        test_ratio=0.0,
+        max_num_frames=64,
+        height=720,
+        width=1280,
+        window_size=32,
+        overlap=8,
+    )
+    
+    val_dataset = VideoInpaintingDataset(
+        data_root=str(test_dir),
+        split='val',
+        train_ratio=0.7,
+        val_ratio=0.3,
+        test_ratio=0.0,
+        max_num_frames=64,
+        height=720,
+        width=1280,
+        window_size=32,
+        overlap=8,
+    )
+    
+    # Create dataloaders
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=1,
+        shuffle=True,
+        num_workers=2,
+    )
+    
+    val_dataloader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=2,
+    )
+    
+    # Load models
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.bfloat16,
+    )
+    
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.bfloat16,
+    )
+    
+    # Modify transformer for inpainting
+    vae_latent_channels = vae.config.latent_channels
+    old_proj = transformer.patch_embed.proj
+    new_proj = torch.nn.Conv2d(
+        vae_latent_channels + 1,
+        old_proj.out_channels,
+        kernel_size=old_proj.kernel_size,
+        stride=old_proj.stride,
+        padding=old_proj.padding,
+    ).to(dtype=torch.bfloat16)
+    
+    with torch.no_grad():
+        new_proj.weight[:, :vae_latent_channels] = old_proj.weight[:, :vae_latent_channels]
+        new_proj.weight[:, vae_latent_channels:] = 0
+        new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
+    transformer.patch_embed.proj = new_proj
+    
+    # Enable optimizations
+    vae.requires_grad_(False)
+    transformer.gradient_checkpointing_enable()
+    
+    # Create optimizer and scheduler
+    optimizer = torch.optim.AdamW(
+        transformer.parameters(),
+        lr=1e-5,
+        betas=(0.9, 0.95),
+        weight_decay=0.01,
+        eps=1e-8,
+    )
+    
+    noise_scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler",
+    )
+    noise_scheduler.config.prediction_type = "v_prediction"
+    
+    # Prepare everything with accelerator
+    transformer, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
+        transformer, optimizer, train_dataloader, val_dataloader
+    )
+    
+    # Training loop
+    transformer.train()
+    num_steps = 4  # Just a few steps to test
+    train_loss = 0.0
+    val_loss = 0.0
+    
+    try:
+        # Training steps
+        for step, batch in enumerate(train_dataloader):
+            if step >= num_steps:
+                break
+                
+            with accelerator.accumulate(transformer):
+                # Get inputs
+                rgb = batch["rgb"]
+                mask = batch["mask"]
+                
+                # Encode frames to latent space
+                with torch.no_grad():
+                    with torch.amp.autocast('cuda', enabled=True):
+                        latents = vae.encode(rgb).latent_dist.sample()
+                
+                # Add noise
+                noise = torch.randn_like(latents)
+                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=latents.device)
+                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                
+                # Resize mask to match latent resolution
+                latent_mask = F.interpolate(mask, size=latents.shape[-2:], mode='nearest')
+                
+                # Model prediction
+                model_output = transformer(
+                    sample=torch.cat([noisy_latents, latent_mask], dim=2),
+                    timestep=timesteps,
+                )
+                
+                # Compute loss
+                loss = compute_loss(model_output, noise, latent_mask, latents)
+                
+                # Backward pass
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(transformer.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+                
+                train_loss += loss.detach().item()
+        
+        # Quick validation
+        transformer.eval()
+        with torch.no_grad():
+            for step, batch in enumerate(val_dataloader):
+                if step >= 2:  # Just test a couple validation steps
+                    break
+                    
+                rgb = batch["rgb"]
+                mask = batch["mask"]
+                
+                with torch.amp.autocast('cuda', enabled=True):
+                    latents = vae.encode(rgb).latent_dist.sample()
+                    noise = torch.randn_like(latents)
+                    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=latents.device)
+                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                    latent_mask = F.interpolate(mask, size=latents.shape[-2:], mode='nearest')
+                    
+                    model_output = transformer(
+                        sample=torch.cat([noisy_latents, latent_mask], dim=2),
+                        timestep=timesteps,
+                    )
+                    
+                    loss = compute_loss(model_output, noise, latent_mask, latents)
+                    val_loss += loss.item()
+        
+        # Verify training was successful
+        avg_train_loss = train_loss / num_steps
+        avg_val_loss = val_loss / 2
+        
+        assert avg_train_loss > 0, "Training loss should be positive"
+        assert avg_val_loss > 0, "Validation loss should be positive"
+        assert not torch.isnan(torch.tensor(avg_train_loss)), "Training loss is NaN"
+        assert not torch.isnan(torch.tensor(avg_val_loss)), "Validation loss is NaN"
+        
+        # Test model saving and loading
+        with accelerator.main_process_first():
+            save_dir = test_dir / "checkpoint-test"
+            save_dir.mkdir(exist_ok=True)
+            accelerator.save_state(save_dir)
+            
+            # Try loading saved model
+            transformer_reloaded = CogVideoXTransformer3DModel.from_pretrained(
+                save_dir / "pytorch_model.bin",
+                torch_dtype=torch.bfloat16,
+            )
+            assert transformer_reloaded is not None, "Failed to reload model"
+    
+    except Exception as e:
+        print(f"Error during training simulation: {e}")
+        raise
+    
+    finally:
+        # Cleanup
+        shutil.rmtree(test_dir)
+        torch.cuda.empty_cache()
+    
+    print("Full training cycle test passed!")
 
 def run_all_tests():
     """Run all tests with proper setup and teardown."""
@@ -794,6 +1049,7 @@ def run_all_tests():
         test_error_handling()
         test_edge_cases()
         test_training_step()
+        test_full_training_cycle()
         
         print("\nAll tests completed successfully!")
         
