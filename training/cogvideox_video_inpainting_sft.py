@@ -1061,8 +1061,10 @@ def main(args):
     # Initialize gradient scaler for mixed precision
     if args.mixed_precision == "fp16":
         scaler = GradScaler("cuda")
+        use_scaler = True
     else:
         scaler = None
+        use_scaler = False
     
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -1096,89 +1098,32 @@ def main(args):
         epoch_metrics = defaultdict(float)
         
         for step, batch in enumerate(train_dataloader):
-            try:
-                with accelerator.accumulate(pipeline.transformer):
-                    total_frames = batch["rgb"].shape[1]
-                    chunk_losses = []
-                    chunk_metrics = defaultdict(list)
-                    
-                    for start_idx in range(0, total_frames - args.chunk_size + 1, 
-                                         args.chunk_size - args.overlap):
-                        # Process chunk with mixed precision
-                        with torch.amp.autocast('cuda', enabled=accelerator.mixed_precision == "fp16"):
-                            # Get and pad chunk
-                            chunk_rgb = batch["rgb"][:, start_idx:start_idx + args.chunk_size]
-                            chunk_mask = batch["mask"][:, start_idx:start_idx + args.chunk_size]
-                            chunk_gt = batch["gt"][:, start_idx:start_idx + args.chunk_size]
-                            
-                            chunk_rgb, rgb_pad = pad_to_multiple(chunk_rgb, max_dim=args.max_resolution)
-                            chunk_mask, _ = pad_to_multiple(chunk_mask, max_dim=args.max_resolution)
-                            chunk_gt, _ = pad_to_multiple(chunk_gt, max_dim=args.max_resolution)
-                            
-                            # Process with VAE
-                            rgb_latents = pipeline.encode(chunk_rgb)
-                            gt_latents = pipeline.encode(chunk_gt)
-                            
-                            # Prepare mask and noise
-                            mask = F.interpolate(chunk_mask, size=rgb_latents.shape[-2:])
-                            noise = torch.randn_like(gt_latents)
-                            timesteps = torch.randint(
-                                0, pipeline.scheduler.config.num_train_timesteps,
-                                (chunk_rgb.shape[0],), device=chunk_rgb.device
-                            )
-                            
-                            # Get encoder hidden states
-                            encoder_hidden_states = torch.randn(
-                                chunk_rgb.shape[0], 
-                                args.chunk_size, 
-                                pipeline.transformer.config.hidden_size,  # Match hidden_size
-                                device=accelerator.device,
-                            )
-                            
-                            # Forward through transformer
-                            model_pred = pipeline.transformer(
-                                hidden_states=torch.cat([gt_latents, mask], dim=2),
-                                encoder_hidden_states=encoder_hidden_states,
-                                timestep=timesteps,
-                            ).sample
-                            
-                            # Remove padding
-                            model_pred = unpad(model_pred, (rgb_pad[0]//8, rgb_pad[1]//8))
-                            noise = unpad(noise, (rgb_pad[0]//8, rgb_pad[1]//8))
-                            
-                            # Calculate loss
-                            loss = compute_loss(model_pred, noise, mask, chunk_gt)
-                        
-                        # Scale loss and backward pass
-                        scaler.scale(loss).backward()
-                        chunk_losses.append(loss)
-                        
-                        # Compute metrics
-                        if step % args.validation_steps == 0:
-                            with torch.no_grad():
-                                metrics = compute_metrics(model_pred, noise, mask)
-                                for k, v in metrics.items():
-                                    chunk_metrics[k].append(v)
-                        
-                        torch.cuda.empty_cache()
-                    
-                    # Average losses and update
+            # Convert inputs to float
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor):
+                    batch[k] = v.to(dtype=torch.float32 if not args.mixed_precision else (torch.float16 if args.mixed_precision == "fp16" else torch.bfloat16))
+            
+            with accelerator.accumulate(pipeline.transformer):
+                # Forward pass
+                with torch.cuda.amp.autocast(enabled=args.mixed_precision != "no"):
+                    loss = pipeline.training_step(batch)
+                
+                # Backward pass
+                if use_scaler:
+                    scaler.scale(loss).backward()
                     if accelerator.sync_gradients:
                         scaler.unscale_(optimizer)
-                        accelerator.clip_grad_norm_(pipeline.transformer.parameters(), args.max_grad_norm)
-                    
+                        torch.nn.utils.clip_grad_norm_(pipeline.transformer.parameters(), 1.0)
                     scaler.step(optimizer)
                     scaler.update()
-                    optimizer.zero_grad()
-                    
-                    # Update metrics
-                    if chunk_metrics:
-                        for k, v in chunk_metrics.items():
-                            epoch_metrics[k] += torch.stack(v).mean().item()
+                else:
+                    loss.backward()
+                    if accelerator.sync_gradients:
+                        torch.nn.utils.clip_grad_norm_(pipeline.transformer.parameters(), 1.0)
+                    optimizer.step()
                 
-            except Exception as e:
-                logger.error(f"Error in training step {step}, epoch {epoch}: {e}")
-                continue
+                optimizer.zero_grad()
+                lr_scheduler.step()
             
             if global_step % args.validation_steps == 0:
                 if accelerator.is_main_process:
