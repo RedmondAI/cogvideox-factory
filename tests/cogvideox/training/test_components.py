@@ -111,27 +111,6 @@ def test_training_components():
     # Convert to [B, T, C, H, W] format for transformer
     noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
     
-    # Apply patch embedding
-    B, T, C, H, W = noisy_frames.shape
-    noisy_frames = model.patch_embed.proj(noisy_frames.reshape(-1, C, H, W))  # [B*T, 3072, H//2, W//2]
-    
-    # Reshape back maintaining [B, T, C, H, W] format
-    _, C_latent, H_latent, W_latent = noisy_frames.shape
-    noisy_frames = noisy_frames.reshape(B, T, C_latent, H_latent, W_latent)
-    
-    # Apply layer normalization to hidden states
-    hidden_norm = create_layer_norm(
-        C_latent,  # Use output channels from patch embedding (3072)
-        model.config,
-        model.device,
-        torch.float16
-    )
-    # Reshape for layer norm [B*T*H*W, C]
-    noisy_frames = noisy_frames.permute(0, 1, 3, 4, 2).reshape(-1, C_latent)
-    noisy_frames = hidden_norm(noisy_frames)
-    # Reshape back to [B, T, C, H, W]
-    noisy_frames = noisy_frames.reshape(B, T, H_latent, W_latent, C_latent).permute(0, 1, 4, 2, 3)
-    
     # Create dummy encoder hidden states
     encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
     

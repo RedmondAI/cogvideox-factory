@@ -906,33 +906,6 @@ def train_loop(
                 # Convert to [B, T, C, H, W] format for transformer
                 clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
                 
-                # Apply patch embedding
-                B, T, C, H, W = clean_frames.shape
-                clean_frames = model.patch_embed.proj(clean_frames.reshape(-1, C, H, W))  # [B*T, 3072, H//2, W//2]
-                
-                # Reshape back maintaining [B, T, C, H, W] format
-                _, C_latent, H_latent, W_latent = clean_frames.shape
-                clean_frames = clean_frames.reshape(B, T, C_latent, H_latent, W_latent)
-                
-                # Apply layer normalization to hidden states
-                clean_frames = clean_frames.permute(0, 1, 3, 4, 2).reshape(-1, C_latent)
-                clean_frames = hidden_norm(clean_frames)
-                clean_frames = clean_frames.reshape(B, T, H_latent, W_latent, C_latent).permute(0, 1, 4, 2, 3)
-                
-                # Convert to [B, C, T, H, W] for scheduler operations
-                clean_frames_scheduler = clean_frames.permute(0, 2, 1, 3, 4)
-                
-                # Sample noise and add noise in scheduler format
-                noise = torch.randn_like(clean_frames_scheduler)
-                timesteps = torch.randint(
-                    0, noise_scheduler.config.num_train_timesteps, (clean_frames.shape[0],), 
-                    device=clean_frames.device
-                ).to(dtype=model_dtype)
-                noisy_frames = noise_scheduler.add_noise(clean_frames_scheduler, noise, timesteps)
-                
-                # Convert back to transformer format [B, T, C, H, W]
-                noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
-                
                 # Create encoder hidden states
                 encoder_hidden_states = torch.zeros(
                     clean_frames.shape[0], 1, model.config.text_embed_dim,
@@ -942,8 +915,11 @@ def train_loop(
                 
                 # Get model prediction
                 noise_pred = model(
-                    hidden_states=noisy_frames,
-                    timestep=timesteps,
+                    hidden_states=clean_frames,
+                    timestep=torch.randint(
+                        0, noise_scheduler.config.num_train_timesteps, (clean_frames.shape[0],), 
+                        device=clean_frames.device
+                    ),
                     encoder_hidden_states=encoder_hidden_states,
                 ).sample
                 
@@ -951,13 +927,14 @@ def train_loop(
                 if torch.isnan(noise_pred).any():
                     raise ValueError("Model output contains NaN values - possible activation or normalization issue")
                 
-                # Convert predictions to scheduler format for loss computation
-                noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
-                
                 # Compute loss with SNR rescaling
                 loss = compute_loss_v_pred_with_snr(
-                    noise_pred_scheduler, noise, timesteps, noise_scheduler,
-                    mask=mask, noisy_frames=noisy_frames.permute(0, 2, 1, 3, 4)
+                    noise_pred, torch.randn_like(clean_frames), 
+                    torch.randint(
+                        0, noise_scheduler.config.num_train_timesteps, (clean_frames.shape[0],), 
+                        device=clean_frames.device
+                    ), noise_scheduler,
+                    mask=mask, noisy_frames=clean_frames
                 )
                 
                 # Verify loss is valid
