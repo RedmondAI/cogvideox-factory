@@ -1220,9 +1220,7 @@ def test_end_to_end():
         hidden_states=latents,
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,
-    )
-    if isinstance(output, tuple):
-        output = output[0]
+    ).sample  # Access .sample attribute
     
     # Verify transformer output
     assert output.shape == latents.shape, "Unexpected transformer output shape"
