@@ -524,16 +524,39 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             torch.cuda.empty_cache()
             gc.collect()
             
-            total_frames = batch["rgb"].shape[1]
+            total_frames = batch["rgb"].shape[2]  # [B, C, T, H, W]
             chunk_losses = []
             
-            for start_idx in range(0, total_frames - self.chunk_size + 1, 
-                                 self.chunk_size - self.overlap):
+            # Ensure valid chunk size
+            if self.chunk_size >= total_frames:
+                logger.warning(f"Chunk size {self.chunk_size} >= total frames {total_frames}, processing as single chunk")
+                effective_chunk_size = total_frames
+                num_chunks = 1
+            else:
+                effective_chunk_size = self.chunk_size
+                num_chunks = (total_frames - effective_chunk_size) // (effective_chunk_size - self.overlap) + 1
+            
+            logger.info(f"Processing {total_frames} frames in {num_chunks} chunks of size {effective_chunk_size}")
+            
+            for chunk_idx in range(num_chunks):
                 try:
+                    # Calculate chunk boundaries
+                    start_idx = chunk_idx * (effective_chunk_size - self.overlap)
+                    end_idx = min(start_idx + effective_chunk_size, total_frames)
+                    if end_idx - start_idx < 2:  # Skip chunks that are too small
+                        continue
+                        
+                    logger.debug(f"Processing chunk {chunk_idx+1}/{num_chunks}: frames {start_idx}-{end_idx}")
+                    
                     # Get and pad chunk
-                    chunk_rgb = batch["rgb"][:, start_idx:start_idx + self.chunk_size]
-                    chunk_mask = batch["mask"][:, start_idx:start_idx + self.chunk_size]
-                    chunk_gt = batch["gt"][:, start_idx:start_idx + self.chunk_size]
+                    chunk_rgb = batch["rgb"][:, :, start_idx:end_idx]
+                    chunk_mask = batch["mask"][:, :, start_idx:end_idx]
+                    chunk_gt = batch["gt"][:, :, start_idx:end_idx]
+                    
+                    # Validate chunk shapes
+                    if chunk_rgb.shape[2] < 2 or chunk_mask.shape[2] < 2 or chunk_gt.shape[2] < 2:
+                        logger.warning(f"Skipping chunk {chunk_idx} due to insufficient frames")
+                        continue
                     
                     chunk_rgb, rgb_pad = pad_to_multiple(chunk_rgb, max_dim=self.max_resolution)
                     chunk_mask, _ = pad_to_multiple(chunk_mask, max_dim=self.max_resolution)
@@ -554,7 +577,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     # Get encoder hidden states
                     encoder_hidden_states = torch.randn(
                         chunk_rgb.shape[0], 
-                        self.chunk_size, 
+                        chunk_rgb.shape[2],  # Use actual temporal dimension
                         self.transformer.config.hidden_size,
                         device=chunk_rgb.device,
                     )
@@ -576,11 +599,14 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     
                 except RuntimeError as e:
                     if "out of memory" in str(e):
-                        logger.warning(f"OOM processing chunk at {start_idx}, skipping")
+                        logger.warning(f"OOM processing chunk {chunk_idx}, skipping")
                         torch.cuda.empty_cache()
                         gc.collect()
                         continue
                     raise
+                except Exception as e:
+                    logger.error(f"Error processing chunk {chunk_idx}: {str(e)}")
+                    continue
                 
                 torch.cuda.empty_cache()
             
