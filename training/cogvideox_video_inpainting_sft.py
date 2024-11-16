@@ -64,6 +64,12 @@ from training.dataset import VideoInpaintingDataset
 
 logger = get_logger(__name__)
 
+def unwrap_model(model):
+    """Unwrap a model from its distributed wrapper."""
+    if hasattr(model, "module"):
+        return model.module
+    return model
+
 class CogVideoXInpaintingPipeline(BasePipeline):
     def __init__(
         self,
@@ -80,6 +86,9 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         self.chunk_size = getattr(args, 'chunk_size', 64) if args else 64
         self.overlap = getattr(args, 'overlap', 8) if args else 8
         self.max_resolution = getattr(args, 'max_resolution', 2048) if args else 2048
+        
+        # Get underlying model if wrapped
+        self._unwrapped_transformer = unwrap_model(self.transformer)
     
     def _calculate_scaling(self, height: int, width: int, num_frames: int):
         """Calculate scaling factors between input and model dimensions."""
@@ -578,7 +587,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     encoder_hidden_states = torch.randn(
                         chunk_rgb.shape[0], 
                         chunk_rgb.shape[2],  # Use actual temporal dimension
-                        self.transformer.config.hidden_size,
+                        self._unwrapped_transformer.config.hidden_size,  # Use unwrapped model
                         device=chunk_rgb.device,
                     )
                     
