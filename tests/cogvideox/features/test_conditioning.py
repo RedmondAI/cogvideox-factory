@@ -74,20 +74,27 @@ def test_temporal_smoothing():
     window_sizes = [2, 4, 8]
     
     for window in window_sizes:
+        # Calculate total padding needed
+        total_pad = window - 1
+        # Split padding between start and end
+        pad_start = total_pad // 2
+        pad_end = total_pad - pad_start
+        
         # Apply temporal smoothing with proper padding
-        pad = (window - 1) // 2  # Padding on each side
         padded = torch.nn.functional.pad(
             frames, 
-            (0, 0, 0, 0, pad, pad), 
+            (0, 0,  # No width padding
+             0, 0,  # No height padding
+             pad_start, pad_end),  # Temporal padding
             mode='replicate'
         )
         
-        # Use average pooling with appropriate padding
+        # Use average pooling without additional padding
         smoothed = torch.nn.functional.avg_pool3d(
             padded,
             kernel_size=(window, 1, 1),
             stride=1,
-            padding=(window // 2, 0, 0)  # Add padding to maintain temporal dimension
+            padding=(0, 0, 0)  # No padding in avg_pool3d since we padded manually
         )
         
         # Verify shape
@@ -113,13 +120,18 @@ def test_temporal_smoothing_edge_cases():
     # Test very short sequence
     short_seq = torch.randn(1, 3, 2, 64, 64, device=device)
     # For short sequence, use minimal window size
-    padded = torch.nn.functional.pad(short_seq, (0, 0, 0, 0, 0, 1), mode='replicate')
+    padded = torch.nn.functional.pad(
+        short_seq, 
+        (0, 0, 0, 0, 0, 1),  # Add one frame of padding at the end
+        mode='replicate'
+    )
     smoothed = torch.nn.functional.avg_pool3d(
         padded,
         kernel_size=(2, 1, 1),
         stride=1,
         padding=(0, 0, 0)
     )
-    assert smoothed.shape == short_seq.shape, "Short sequence shape mismatch"
+    assert smoothed.shape == short_seq.shape, \
+        f"Short sequence shape mismatch. Expected {short_seq.shape}, got {smoothed.shape}"
     
     print("Temporal smoothing edge cases passed!")
