@@ -339,6 +339,20 @@ def analyze_scheduler(scheduler):
     for key, value in scheduler.config.items():
         print(f"  {key}: {value}")
     
+    # Analyze noise schedule
+    print("\nAnalyzing noise schedule...")
+    if hasattr(scheduler, 'betas'):
+        betas = scheduler.betas
+        print(f"Number of training steps: {len(betas)}")
+        print(f"Beta range: [{betas.min().item():.6f}, {betas.max().item():.6f}]")
+        print(f"Beta schedule type: {scheduler.config.beta_schedule}")
+    
+    if hasattr(scheduler, 'alphas_cumprod'):
+        alphas = scheduler.alphas_cumprod
+        print(f"Alpha range: [{alphas.min().item():.6f}, {alphas.max().item():.6f}]")
+        snr_db = -10 * torch.log10(1/alphas - 1)
+        print(f"SNR range: [{snr_db.min().item():.1f}dB, {snr_db.max().item():.1f}dB]")
+    
     # Test scheduler step
     print("\nTesting scheduler step...")
     logger.info("\nTesting Scheduler Step:")
@@ -375,38 +389,30 @@ def analyze_scheduler(scheduler):
             old_pred_original_sample=old_pred_original_sample,
         )
         
-        if hasattr(output, 'prev_sample'):
-            output_sample = output.prev_sample
+        # Handle different output types
+        if isinstance(output, tuple):
+            print("\nScheduler output components:")
+            for i, component in enumerate(output):
+                if isinstance(component, torch.Tensor):
+                    print(f"  Component {i} shape: {component.shape}")
+                else:
+                    print(f"  Component {i} type: {type(component)}")
         else:
-            output_sample = output
+            if hasattr(output, 'prev_sample'):
+                output_sample = output.prev_sample
+                print(f"Output sample shape: {output_sample.shape}")
+            else:
+                print(f"Output type: {type(output)}")
             
-        print(f"Output shape: {output_sample.shape}")
-        
-        # Verify shapes match
-        if output_sample.shape != sample.shape:
-            print(f"WARNING: Output shape {output_sample.shape} doesn't match input shape {sample.shape}")
-        
-        # Analyze noise schedule
-        print("\nAnalyzing noise schedule...")
-        if hasattr(scheduler, 'betas'):
-            betas = scheduler.betas
-            print(f"Number of training steps: {len(betas)}")
-            print(f"Beta range: [{betas.min().item():.6f}, {betas.max().item():.6f}]")
-            print(f"Beta schedule type: {scheduler.config.beta_schedule}")
-        
-        if hasattr(scheduler, 'alphas_cumprod'):
-            alphas = scheduler.alphas_cumprod
-            print(f"Alpha range: [{alphas.min().item():.6f}, {alphas.max().item():.6f}]")
-            snr_db = -10 * torch.log10(1/alphas - 1)
-            print(f"SNR range: [{snr_db.min().item():.1f}dB, {snr_db.max().item():.1f}dB]")
-            
-            # Print inference schedule details
-            print("\nInference schedule details:")
-            print(f"Number of inference steps: {num_inference_steps}")
-            print(f"Timestep spacing: {scheduler.config.timestep_spacing}")
-            print(f"Steps offset: {scheduler.config.steps_offset}")
-            if hasattr(scheduler, 'timesteps'):
-                print(f"Actual timesteps: {scheduler.timesteps.tolist()}")
+        # Print inference schedule details
+        print("\nInference schedule details:")
+        print(f"Number of inference steps: {num_inference_steps}")
+        print(f"Timestep spacing: {scheduler.config.timestep_spacing}")
+        print(f"Steps offset: {scheduler.config.steps_offset}")
+        print(f"Prediction type: {scheduler.config.prediction_type}")
+        if hasattr(scheduler, 'timesteps'):
+            print(f"First few timesteps: {scheduler.timesteps[:5].tolist()}")
+            print(f"Last few timesteps: {scheduler.timesteps[-5:].tolist()}")
         
     except Exception as e:
         print(f"Scheduler test failed: {e}")
