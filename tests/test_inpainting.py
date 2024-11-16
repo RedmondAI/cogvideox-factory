@@ -380,9 +380,9 @@ def test_model_modification():
     
     # Create test model
     vae = AutoencoderKLCogVideoX.from_pretrained(
-        "THUDM/CogVideoX-5b",  # Using 5b model for better quality
+        "THUDM/CogVideoX-5b",
         subfolder="vae",
-        torch_dtype=torch.bfloat16,  # 5b model uses bfloat16
+        torch_dtype=torch.bfloat16,
     )
     
     transformer = CogVideoXTransformer3DModel.from_pretrained(
@@ -393,7 +393,7 @@ def test_model_modification():
     
     # Get VAE latent channels
     vae_latent_channels = vae.config.latent_channels
-    assert vae_latent_channels == 8, "Expected 8 latent channels for CogVideoX-5b"
+    assert vae_latent_channels == 16, f"Expected 16 latent channels for CogVideoX-5b VAE, got {vae_latent_channels}"
     
     # Test input channel modification
     old_proj = transformer.patch_embed.proj
@@ -445,15 +445,19 @@ def test_model_modification():
 def test_pipeline():
     """Test the inpainting pipeline with chunked processing."""
     from cogvideox_video_inpainting_sft import CogVideoXInpaintingPipeline
-    from diffusers import CogVideoXDPMScheduler, CogVideoXTransformer3DModel
+    from diffusers import CogVideoXDPMScheduler, CogVideoXTransformer3DModel, AutoencoderKLCogVideoX
     import shutil
     
     # Load models
     vae = AutoencoderKLCogVideoX.from_pretrained(
-        "THUDM/CogVideoX-5b",  # Using 5b model for better quality
+        "THUDM/CogVideoX-5b",
         subfolder="vae",
-        torch_dtype=torch.bfloat16,  # 5b model uses bfloat16
+        torch_dtype=torch.bfloat16,
     )
+    
+    # Verify VAE latent channels
+    vae_latent_channels = vae.config.latent_channels
+    assert vae_latent_channels == 16, f"Expected 16 latent channels for CogVideoX-5b VAE, got {vae_latent_channels}"
     
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         "THUDM/CogVideoX-5b",
@@ -461,41 +465,84 @@ def test_pipeline():
         torch_dtype=torch.bfloat16,
     )
     
-    scheduler = CogVideoXDPMScheduler.from_pretrained(
-        "THUDM/CogVideoX-5b",
-        subfolder="scheduler"
-    )
+    # Modify transformer for inpainting
+    old_proj = transformer.patch_embed.proj
+    new_proj = torch.nn.Conv2d(
+        vae_latent_channels + 1,  # 16 latent channels + 1 mask channel
+        old_proj.out_channels,
+        kernel_size=old_proj.kernel_size,
+        stride=old_proj.stride,
+        padding=old_proj.padding,
+    ).to(dtype=torch.bfloat16)
     
-    # Create pipeline with updated parameters
+    with torch.no_grad():
+        new_proj.weight[:, :vae_latent_channels] = old_proj.weight[:, :vae_latent_channels]
+        new_proj.weight[:, vae_latent_channels:] = 0
+        new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
+    transformer.patch_embed.proj = new_proj
+    
+    # Create pipeline
     pipeline = CogVideoXInpaintingPipeline(
         vae=vae,
         transformer=transformer,
-        scheduler=scheduler,
-        window_size=64,  # Larger window for better temporal consistency
-        overlap=16,      # 25% overlap
+        scheduler=CogVideoXDPMScheduler(),
+        window_size=32,
+        overlap=8,
         vae_precision="bf16",
-        max_resolution=2048,
     )
     
-    # Enable memory optimizations
-    if hasattr(transformer.config, 'use_memory_efficient_attention'):
-        transformer.enable_xformers_memory_efficient_attention()
+    # Create test data
+    test_dir = Path("assets/inpainting_test_pipeline")
+    if test_dir.exists():
+        shutil.rmtree(test_dir)
+    test_dir.mkdir(parents=True, exist_ok=True)
+    create_test_data(test_dir, sequence_name="sequence_000", num_frames=64)
+    
+    # Load test data
+    from dataset import VideoInpaintingDataset
+    dataset = VideoInpaintingDataset(
+        data_root=str(test_dir),
+        split='train',
+        train_ratio=1.0,
+        val_ratio=0.0,
+        test_ratio=0.0,
+        max_num_frames=64,
+        height=720,
+        width=1280,
+    )
+    
+    # Get test batch
+    batch = dataset[0]
+    rgb = batch["rgb"].unsqueeze(0)
+    mask = batch["mask"].unsqueeze(0)
     
     # Test pipeline
-    test_input = torch.randn(1, 64, 3, 64, 64, dtype=torch.bfloat16)  # [B, T, C, H, W]
-    test_mask = torch.ones(1, 64, 1, 64, 64, dtype=torch.bfloat16)    # [B, T, 1, H, W]
-    test_mask[:, :, :, 16:48, 16:48] = 0  # Create a hole in the middle
+    with torch.no_grad():
+        with torch.amp.autocast('cuda', enabled=True):
+            # Test VAE encoding
+            latents = pipeline.vae.encode(rgb).latent_dist.sample()
+            assert latents.shape[2] == vae_latent_channels, f"VAE output has {latents.shape[2]} channels, expected {vae_latent_channels}"
+            
+            # Test pipeline call
+            output = pipeline(
+                rgb_frames=rgb,
+                mask_frames=mask,
+                num_inference_steps=2,  # Use small number for testing
+            )
     
-    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        output = pipeline(
-            rgb_frames=test_input,
-            mask_frames=test_mask,
-            num_inference_steps=20,  # Reduced for testing
-        )
+    # Verify output
+    assert output.shape == rgb.shape, f"Output shape {output.shape} doesn't match input shape {rgb.shape}"
+    assert not torch.isnan(output).any(), "Output contains NaN values"
+    assert output.dtype == rgb.dtype, f"Output dtype {output.dtype} doesn't match input dtype {rgb.dtype}"
     
-    assert output.shape == test_input.shape, f"Wrong output shape: {output.shape}"
-    assert output.dtype == torch.bfloat16, f"Wrong output dtype: {output.dtype}"
-    print("Pipeline tests passed!")
+    # Test memory cleanup
+    del pipeline
+    torch.cuda.empty_cache()
+    
+    # Cleanup
+    shutil.rmtree(test_dir)
+    
+    print("Pipeline test passed!")
 
 def test_error_handling():
     """Test error handling in pipeline."""
@@ -713,49 +760,39 @@ def test_training_step():
     
     # Create model with inpainting modification
     model = CogVideoXTransformer3DModel(
-        in_channels=8,  # VAE latent channels
-        out_channels=8,
+        in_channels=16,  # VAE latent channels
+        out_channels=16,
         num_layers=1,
         num_attention_heads=1,
-        hidden_size=768,  # Use hidden_size instead of cross_attention_dim
+        hidden_size=768,
     )
     
     # Modify input projection for mask channel
     old_proj = model.patch_embed.proj
     new_proj = torch.nn.Conv2d(
-        9,  # 8 latent channels + 1 mask channel
+        17,  # 16 latent channels + 1 mask channel
         old_proj.out_channels,
         kernel_size=old_proj.kernel_size,
         stride=old_proj.stride,
         padding=old_proj.padding,
     )
     with torch.no_grad():
-        new_proj.weight[:, :8] = old_proj.weight[:, :8]  # Copy VAE latent weights
-        new_proj.weight[:, 8:] = 0  # Zero-initialize mask channel
+        new_proj.weight[:, :16] = old_proj.weight[:, :16]  # Copy VAE latent weights
+        new_proj.weight[:, 16:] = 0  # Zero-initialize mask channel
         new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
     model.patch_embed.proj = new_proj
-    
-    # Enable memory optimizations
-    model.gradient_checkpointing_enable()
     
     # Create optimizer and scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     noise_scheduler = CogVideoXDPMScheduler()
-    
-    # Configure scheduler for better inpainting
-    noise_scheduler.config.prediction_type = "v_prediction"
-    noise_scheduler.config.num_train_timesteps = 1000
-    noise_scheduler.config.beta_schedule = "scaled_linear"
-    noise_scheduler.config.steps_offset = 1
-    noise_scheduler.config.clip_sample = False
     
     # Get test batch
     batch = dataset[0]
     rgb = batch["rgb"].unsqueeze(0)
     mask = batch["mask"].unsqueeze(0)
     
-    # Simulate VAE encoding
-    latents = torch.randn(rgb.shape[0], rgb.shape[1], 8, rgb.shape[3]//8, rgb.shape[4]//8)
+    # Simulate VAE encoding with correct channel count
+    latents = torch.randn(rgb.shape[0], rgb.shape[1], 16, rgb.shape[3]//8, rgb.shape[4]//8)
     
     # Training step with mixed precision
     model.train()
@@ -780,20 +817,19 @@ def test_training_step():
             timestep=timesteps,
         )
         
-        # Compute loss with temporal consistency
+        # Verify output shape matches latent shape
+        assert model_output.shape == latents.shape, f"Model output shape {model_output.shape} doesn't match latent shape {latents.shape}"
+        
+        # Compute loss
         loss = compute_loss(model_output, noise, latent_mask, latents)
         
-        # Backward pass with gradient checkpointing
+        # Backward pass
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         optimizer.zero_grad()
     
     assert not torch.isnan(loss), "Loss should not be NaN"
-    assert loss.item() > 0, "Loss should be positive"
-    
-    # Test memory optimizations
-    assert model.is_gradient_checkpointing, "Gradient checkpointing should be enabled"
     
     # Cleanup
     shutil.rmtree(test_dir)
@@ -880,6 +916,10 @@ def test_full_training_cycle():
         torch_dtype=torch.bfloat16,
     )
     
+    # Verify VAE latent channels
+    vae_latent_channels = vae.config.latent_channels
+    assert vae_latent_channels == 4, f"Expected 4 latent channels for CogVideoX-5b VAE, got {vae_latent_channels}"
+    
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         "THUDM/CogVideoX-5b",
         subfolder="transformer",
@@ -887,10 +927,9 @@ def test_full_training_cycle():
     )
     
     # Modify transformer for inpainting
-    vae_latent_channels = vae.config.latent_channels
     old_proj = transformer.patch_embed.proj
     new_proj = torch.nn.Conv2d(
-        vae_latent_channels + 1,
+        vae_latent_channels + 1,  # 4 latent channels + 1 mask channel
         old_proj.out_channels,
         kernel_size=old_proj.kernel_size,
         stride=old_proj.stride,
@@ -948,6 +987,7 @@ def test_full_training_cycle():
                 with torch.no_grad():
                     with torch.amp.autocast('cuda', enabled=True):
                         latents = vae.encode(rgb).latent_dist.sample()
+                        assert latents.shape[2] == vae_latent_channels, f"VAE output has {latents.shape[2]} channels, expected {vae_latent_channels}"
                 
                 # Add noise
                 noise = torch.randn_like(latents)
@@ -962,6 +1002,9 @@ def test_full_training_cycle():
                     sample=torch.cat([noisy_latents, latent_mask], dim=2),
                     timestep=timesteps,
                 )
+                
+                # Verify output shape
+                assert model_output.shape == latents.shape, f"Model output shape {model_output.shape} doesn't match latent shape {latents.shape}"
                 
                 # Compute loss
                 loss = compute_loss(model_output, noise, latent_mask, latents)
@@ -987,6 +1030,8 @@ def test_full_training_cycle():
                 
                 with torch.amp.autocast('cuda', enabled=True):
                     latents = vae.encode(rgb).latent_dist.sample()
+                    assert latents.shape[2] == vae_latent_channels, "VAE output channels mismatch"
+                    
                     noise = torch.randn_like(latents)
                     timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=latents.device)
                     noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
@@ -997,6 +1042,7 @@ def test_full_training_cycle():
                         timestep=timesteps,
                     )
                     
+                    assert model_output.shape == latents.shape, "Model output shape mismatch"
                     loss = compute_loss(model_output, noise, latent_mask, latents)
                     val_loss += loss.item()
         

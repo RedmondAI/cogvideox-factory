@@ -282,11 +282,11 @@ class CogVideoXInpaintingPipeline:
             window_mask, _ = pad_to_multiple(window_mask, max_dim=self.max_resolution)
             
             # Process with appropriate precision
-            latents = self.encode_frames(window_rgb)  # Shape: [B, T, 8, H/8, W/8]
+            latents = self.encode_frames(window_rgb)  # Shape: [B, T, 4, H/8, W/8]
             mask = F.interpolate(window_mask, size=latents.shape[-2:], mode='nearest')  # Shape: [B, T, 1, H/8, W/8]
             
             # Model forward pass
-            latent_input = torch.cat([latents, mask], dim=2)  # Shape: [B, T, 9, H/8, W/8]
+            latent_input = torch.cat([latents, mask], dim=2)  # Shape: [B, T, 5, H/8, W/8]
             noise_pred = self.transformer(
                 sample=latent_input,
                 timestep=timestep,
@@ -568,6 +568,11 @@ def main(args):
         revision=args.revision,
         torch_dtype=torch.bfloat16,  # Match model precision
     )
+    vae_latent_channels = vae.config.latent_channels
+    logger.info(f"VAE latent channels: {vae_latent_channels}")
+    if vae_latent_channels != 16:
+        raise ValueError(f"Expected 16 latent channels for CogVideoX-5b VAE, got {vae_latent_channels}")
+    
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="transformer",
@@ -575,13 +580,9 @@ def main(args):
         torch_dtype=torch.bfloat16,  # Match model precision
     )
     
-    # Get VAE latent channels
-    vae_latent_channels = vae.config.latent_channels  # Should be 8 for CogVideoX-5b
-    logger.info(f"VAE latent channels: {vae_latent_channels}")
-    
     # Modify transformer input channels to accept mask
     old_proj = transformer.patch_embed.proj
-    original_in_channels = old_proj.weight.size(1)  # Get actual number of input channels
+    original_in_channels = old_proj.weight.size(1)
     if original_in_channels != vae_latent_channels:
         logger.warning(
             f"Transformer input channels ({original_in_channels}) don't match VAE latent channels ({vae_latent_channels}). "
@@ -594,7 +595,7 @@ def main(args):
         kernel_size=old_proj.kernel_size,
         stride=old_proj.stride,
         padding=old_proj.padding,
-    ).to(dtype=torch.bfloat16)  # Match model precision
+    ).to(dtype=torch.bfloat16)
     
     # Initialize new weights
     with torch.no_grad():
@@ -604,7 +605,6 @@ def main(args):
         new_proj.weight[:, vae_latent_channels:] = 0
         new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
     
-    # Replace the projection layer
     transformer.patch_embed.proj = new_proj
     
     # Freeze VAE
