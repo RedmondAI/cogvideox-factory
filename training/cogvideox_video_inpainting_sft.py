@@ -334,12 +334,12 @@ class CogVideoXInpaintingPipeline:
             mask: Binary mask of shape [B, 1, T, H, W]
             
         Returns:
-            Processed mask of shape [B, 1, T//ratio, H//8, W//8]
-            where ratio = transformer_ratio(4) for temporal dimension
+            Processed mask of shape [B, 1, T//2, H//8, W//8]
+            where T//2 matches VAE's temporal compression
         """
-        # Apply transformer temporal compression and VAE spatial compression
+        # Apply VAE's temporal and spatial compression
         mask = F.interpolate(mask, size=(
-            mask.shape[2]//self.transformer.config.temporal_compression_ratio,  # Transformer temporal compression
+            mask.shape[2]//2,  # VAE temporal compression (matches encode method)
             mask.shape[3]//8,  # VAE spatial compression
             mask.shape[4]//8   # VAE spatial compression
         ), mode='nearest')
