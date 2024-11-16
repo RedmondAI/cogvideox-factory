@@ -315,7 +315,7 @@ class CogVideoXInpaintingPipeline:
         # Log memory requirements
         bytes_per_element = 2 if self.dtype == torch.float16 else 4
         video_memory = B * C * T * H * W * bytes_per_element / (1024**3)  # GB
-        latent_memory = B * 16 * (T//4) * (H//8) * (W//8) * bytes_per_element / (1024**3)  # GB
+        latent_memory = B * 16 * (T//2) * (H//8) * (W//8) * bytes_per_element / (1024**3)  # GB
         transformer_memory = 10.8  # GB (from analysis)
         total_memory = video_memory + latent_memory + transformer_memory
         
@@ -335,7 +335,7 @@ class CogVideoXInpaintingPipeline:
             x: Input tensor of shape [B, C, T, H, W]
             
         Returns:
-            Latent tensor of shape [B, C, T//4, H//8, W//8]
+            Latent tensor of shape [B, C, T//2, H//8, W//8]
         """
         latents = self.vae.encode(x).latent_dist.sample()
         latents = latents * self.vae.config.scaling_factor
@@ -349,7 +349,7 @@ class CogVideoXInpaintingPipeline:
             latents: Latent tensor of shape [B, C, T, H, W]
             
         Returns:
-            Video tensor of shape [B, C, 8, H*8, W*8]  # Fixed 8 frames output
+            Video tensor of shape [B, C, T*2, H*8, W*8]
         """
         latents = 1 / self.vae.config.scaling_factor * latents
         video = self.vae.decode(latents).sample
@@ -364,7 +364,7 @@ class CogVideoXInpaintingPipeline:
         generator: Optional[torch.Generator] = None,
     ) -> torch.Tensor:
         """Prepare random latents accounting for temporal compression."""
-        latents_shape = (batch_size, self.transformer.config.in_channels, num_frames//4, height//8, width//8)
+        latents_shape = (batch_size, self.transformer.config.in_channels, num_frames//2, height//8, width//8)
         latents = torch.randn(latents_shape, generator=generator, device=self.device, dtype=self.dtype)
         latents = latents * self.scheduler.init_noise_sigma
         return latents
@@ -376,9 +376,9 @@ class CogVideoXInpaintingPipeline:
             mask: Binary mask of shape [B, 1, T, H, W]
             
         Returns:
-            Processed mask of shape [B, 1, T//4, H//8, W//8]
+            Processed mask of shape [B, 1, T//2, H//8, W//8]
         """
-        mask = F.interpolate(mask, size=(mask.shape[2]//4, mask.shape[3]//8, mask.shape[4]//8), mode='nearest')
+        mask = F.interpolate(mask, size=(mask.shape[2]//2, mask.shape[3]//8, mask.shape[4]//8), mode='nearest')
         return mask
     
     def prepare_encoder_hidden_states(
