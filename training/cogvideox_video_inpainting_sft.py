@@ -467,10 +467,10 @@ class CogVideoXInpaintingPipeline:
             
             # Predict noise
             noise_pred = self.transformer(
-                latent_model_input,
+                hidden_states=latent_model_input,
                 timestep=t,
                 encoder_hidden_states=encoder_hidden_states,
-            )[0]
+            ).sample
             
             # Scheduler step
             latent_output = self.scheduler.step(
@@ -594,10 +594,14 @@ def train_loop(
                 noisy_frames = noise_scheduler.add_noise(clean_frames, noise, timesteps)
                 
                 # Get model prediction
-                noise_pred = model(noisy_frames, mask, timesteps)
+                noise_pred = model(
+                    hidden_states=noisy_frames,
+                    timestep=timesteps,
+                    encoder_hidden_states=None,  # No text conditioning during training
+                ).sample
                 
                 # Compute loss
-                loss = compute_loss(noise_pred, noise, mask, clean_frames)
+                loss = compute_loss(noise_pred, noise, mask, noisy_frames)
                 
                 # Backprop
                 accelerator.backward(loss)
@@ -644,7 +648,11 @@ def train_loop(
                             )
                             noisy_frames = noise_scheduler.add_noise(clean_frames, noise, timesteps)
                             
-                            noise_pred = model(noisy_frames, mask, timesteps)
+                            noise_pred = model(
+                                hidden_states=noisy_frames,
+                                timestep=timesteps,
+                                encoder_hidden_states=None,  # No text conditioning during training
+                            ).sample
                             val_loss += compute_loss(noise_pred, noise, mask, clean_frames).item()
                     
                     val_loss /= len(val_dataloader)
@@ -949,10 +957,10 @@ def main(args):
                             
                             # Forward through transformer
                             model_pred = pipeline.transformer(
-                                sample=torch.cat([gt_latents, mask], dim=2),
+                                hidden_states=torch.cat([gt_latents, mask], dim=2),
                                 encoder_hidden_states=encoder_hidden_states,
                                 timestep=timesteps,
-                            )
+                            ).sample
                             
                             # Remove padding
                             model_pred = unpad(model_pred, (rgb_pad[0]//8, rgb_pad[1]//8))
