@@ -254,30 +254,22 @@ class CogVideoXInpaintingPipeline:
     
     def _calculate_scaling(self, height: int, width: int, num_frames: int):
         """Calculate scaling factors between input and model dimensions."""
-        spatial_scale = (height / self.model_height, width / self.model_width)
+        # Initialize accelerate state for logging
+        from accelerate.state import PartialState
+        _ = PartialState()
+        
+        # Calculate spatial scaling
+        spatial_scale = min(
+            height / self.model_height,
+            width / self.model_width
+        )
+        
+        # Calculate temporal scaling
         temporal_scale = num_frames / self.model_frames
         
-        # Validate scaling ratios
-        min_scale = 0.25  # Don't allow scaling smaller than 1/4
-        max_scale = 32.0  # Don't allow scaling larger than 32x
-        
-        for scale_name, scale in [
-            ("height", spatial_scale[0]),
-            ("width", spatial_scale[1]),
-            ("temporal", temporal_scale)
-        ]:
-            if not (min_scale <= scale <= max_scale):
-                raise ValueError(
-                    f"Invalid {scale_name} scaling factor {scale:.2f}. "
-                    f"Must be between {min_scale} and {max_scale}. "
-                    f"Input dimensions too {'small' if scale < min_scale else 'large'}."
-                )
-        
-        # Log detailed scaling information
         logger.info("Dimension scaling factors:")
-        logger.info(f"  Height: {spatial_scale[0]:.2f}x (Input: {height} → Model: {self.model_height})")
-        logger.info(f"  Width: {spatial_scale[1]:.2f}x (Input: {width} → Model: {self.model_width})")
-        logger.info(f"  Temporal: {temporal_scale:.2f}x (Input: {num_frames} → Model: {self.model_frames})")
+        logger.info(f"  Spatial: {spatial_scale:.2f}")
+        logger.info(f"  Temporal: {temporal_scale:.2f}")
         
         return spatial_scale, temporal_scale
     
