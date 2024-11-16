@@ -1341,35 +1341,14 @@ def test_resolution_scaling():
                 # Check a window around the boundary
                 window_size = overlap // 2  # Half the overlap size
                 
-                # Ensure window is within bounds
-                left_start = max(0, boundary - window_size)
-                left_end = boundary
-                right_start = boundary
-                right_end = min(W * 8, boundary + window_size)
+                # Use pipeline's boundary check method
+                mean_diff, max_diff = pipeline.check_boundary_continuity(decoded, boundary, window_size)
                 
-                if left_start >= left_end or right_start >= right_end:
+                if mean_diff == 0.0 and max_diff == 0.0:
                     print(f"Skipping boundary {boundary} - insufficient window size")
                     continue
                 
-                # Get values around boundary
-                left_vals = decoded[..., left_start:left_end]
-                right_vals = decoded[..., right_start:right_end]
-                
-                # Reshape tensors to combine all dimensions except the last
-                left_flat = left_vals.reshape(-1, left_vals.shape[-1])
-                right_flat = right_vals.reshape(-1, right_vals.shape[-1])
-                
-                # Calculate mean values along the seam
-                left_mean = left_flat.mean(dim=0)
-                right_mean = right_flat.mean(dim=0)
-                mean_diff = (right_mean - left_mean).abs().mean().item()
-                
-                # Calculate max difference along the seam
-                diff_flat = (right_flat - left_flat).abs()
-                max_diff = diff_flat.mean(dim=0).max().item()
-                
                 print(f"Boundary {boundary}:")
-                print(f"  Window: [{left_start}:{left_end}] - [{right_start}:{right_end}]")
                 print(f"  Mean difference: {mean_diff:.6f}")
                 print(f"  Max difference: {max_diff:.6f}")
                 
