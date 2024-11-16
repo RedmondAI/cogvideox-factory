@@ -272,11 +272,11 @@ class CogVideoXInpaintingPipeline:
             window_mask, _ = pad_to_multiple(window_mask, max_dim=self.max_resolution)
             
             # Process with appropriate precision
-            latents = self.encode_frames(window_rgb)
-            mask = F.interpolate(window_mask, size=latents.shape[-2:])
+            latents = self.encode_frames(window_rgb)  # Shape: [B, T, 8, H/8, W/8]
+            mask = F.interpolate(window_mask, size=latents.shape[-2:], mode='nearest')  # Shape: [B, T, 1, H/8, W/8]
             
             # Model forward pass
-            latent_input = torch.cat([latents, mask], dim=2)
+            latent_input = torch.cat([latents, mask], dim=2)  # Shape: [B, T, 9, H/8, W/8]
             noise_pred = self.transformer(
                 sample=latent_input,
                 timestep=timestep,
@@ -434,11 +434,21 @@ def main(args):
         torch_dtype=torch.bfloat16,  # Match model precision
     )
     
+    # Get VAE latent channels
+    vae_latent_channels = vae.config.latent_channels  # Should be 8 for CogVideoX-5b
+    logger.info(f"VAE latent channels: {vae_latent_channels}")
+    
     # Modify transformer input channels to accept mask
     old_proj = transformer.patch_embed.proj
     original_in_channels = old_proj.weight.size(1)  # Get actual number of input channels
+    if original_in_channels != vae_latent_channels:
+        logger.warning(
+            f"Transformer input channels ({original_in_channels}) don't match VAE latent channels ({vae_latent_channels}). "
+            "This may cause issues with the model."
+        )
+    
     new_proj = torch.nn.Conv2d(
-        original_in_channels + 1,  # Add mask channel to existing channels
+        vae_latent_channels + 1,  # Add mask channel to latent channels
         old_proj.out_channels,
         kernel_size=old_proj.kernel_size,
         stride=old_proj.stride,
@@ -447,10 +457,10 @@ def main(args):
     
     # Initialize new weights
     with torch.no_grad():
-        # Copy all existing channels
-        new_proj.weight[:, :original_in_channels] = old_proj.weight
+        # Copy latent channel weights
+        new_proj.weight[:, :vae_latent_channels] = old_proj.weight[:, :vae_latent_channels]
         # Initialize new mask channel to 0
-        new_proj.weight[:, original_in_channels:] = 0
+        new_proj.weight[:, vae_latent_channels:] = 0
         new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
     
     # Replace the projection layer
