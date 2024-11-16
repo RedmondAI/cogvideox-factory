@@ -15,10 +15,17 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=None, noisy_frames=None):
     """Compute v-prediction loss with SNR scaling."""
-    # Get scheduler parameters
-    alphas_cumprod = scheduler.alphas_cumprod
+    # Get scheduler parameters and ensure float16 precision
+    alphas_cumprod = scheduler.alphas_cumprod.to(device=noise_pred.device, dtype=noise_pred.dtype)
     alpha_prod_t = alphas_cumprod[timesteps].view(-1, 1, 1, 1, 1)
     sigma_t = torch.sqrt(1 - alpha_prod_t)
+    
+    # Ensure all tensors are in float16
+    noise = noise.to(dtype=noise_pred.dtype)
+    if noisy_frames is not None:
+        noisy_frames = noisy_frames.to(dtype=noise_pred.dtype)
+    if mask is not None:
+        mask = mask.to(dtype=noise_pred.dtype)
     
     # Adjust noise and noisy_frames to match model output spatial dimensions
     if noise.shape != noise_pred.shape:
