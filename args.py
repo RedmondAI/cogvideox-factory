@@ -59,8 +59,20 @@ def get_args():
     parser.add_argument("--window_size", type=int, default=32)
     parser.add_argument("--overlap", type=int, default=8)
     parser.add_argument("--chunk_size", type=int, default=64)
+    parser.add_argument("--max_resolution", type=int, default=2048)
+    parser.add_argument("--min_sequence_length", type=int, default=100)
     parser.add_argument("--random_flip_h", type=float, default=0.0)
     parser.add_argument("--random_flip_v", type=float, default=0.0)
+    
+    # Memory settings
+    parser.add_argument("--enable_memory_logging", action="store_true")
+    parser.add_argument("--memory_cleanup_interval", type=int, default=10)
+    parser.add_argument("--max_memory_usage", type=float, default=0.95)
+    
+    # Dataset settings
+    parser.add_argument("--dataset_name", type=str, default="cogvideo")
+    parser.add_argument("--dataset_split", type=str, default="train")
+    parser.add_argument("--dataset_root", type=str, default=None)
     
     # Additional features
     parser.add_argument("--enable_model_cpu_offload", action="store_true")
