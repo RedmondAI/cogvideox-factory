@@ -1264,9 +1264,9 @@ def test_resolution_scaling():
         (720, 1280),   # HD (will use chunks)
     ]
     
-    # Chunking parameters
-    chunk_size = 256  # Base chunk size (in pixel space)
-    overlap = 32      # Overlap size (in pixel space)
+    # Chunking parameters (in pixel space)
+    chunk_size = 256  # Base chunk size
+    overlap = 32      # Overlap size
     
     for H, W in resolutions:
         print(f"\nTesting resolution {H}x{W}")
@@ -1295,10 +1295,17 @@ def test_resolution_scaling():
         # Determine if chunking is needed
         use_chunks = W > chunk_size
         if use_chunks:
-            effective_chunk_size = (chunk_size - 2 * overlap) // 8  # Convert to latent space
-            num_chunks = math.ceil(W // 8 / effective_chunk_size)  # Calculate in latent space
-            print(f"Using chunks - Base size: {chunk_size}, Effective size: {effective_chunk_size*8} (in pixel space)")
+            effective_chunk = chunk_size - 2 * overlap
+            num_chunks = math.ceil(W / effective_chunk)
+            print(f"Using chunks - Base size: {chunk_size}, Effective size: {effective_chunk}")
             print(f"Overlap: {overlap}, Number of chunks: {num_chunks}")
+            
+            # Calculate expected chunk positions
+            chunk_starts = []
+            for i in range(num_chunks):
+                start_w = max(0, i * effective_chunk - overlap)
+                chunk_starts.append(start_w)
+            print(f"Chunk start positions: {chunk_starts}")
         
         # Test encoding
         latents = pipeline.encode(
@@ -1322,20 +1329,17 @@ def test_resolution_scaling():
         
         # Test for visible seams in output (basic check)
         if use_chunks:
-            # Calculate boundaries in pixel space
-            boundaries = []
-            offset = 0
-            for i in range(num_chunks - 1):
-                offset += effective_chunk_size * 8  # Convert back to pixel space
-                if offset >= W:
-                    break
-                boundaries.append(offset)
-            
-            # Check smoothness at boundaries
             print("\nChecking chunk boundaries:")
+            # Skip first chunk start (0) and convert others to pixel space
+            boundaries = [pos * 8 for pos in chunk_starts[1:] if pos < W]
+            
             for boundary in boundaries:
                 # Check a window around the boundary
-                window_size = 8
+                window_size = overlap // 2  # Half the overlap size
+                if boundary - window_size < 0 or boundary + window_size > W * 8:
+                    continue
+                    
+                # Get values around boundary
                 left_vals = decoded[..., boundary-window_size:boundary].float()
                 right_vals = decoded[..., boundary:boundary+window_size].float()
                 

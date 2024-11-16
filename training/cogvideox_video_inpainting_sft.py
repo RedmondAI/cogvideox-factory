@@ -336,32 +336,33 @@ class CogVideoXInpaintingPipeline:
         # Process in chunks if input is large
         if chunk_size is not None and W > chunk_size:
             # Calculate effective chunk size with overlap
-            chunk_size = chunk_size - 2 * overlap
-            num_chunks = math.ceil(W / chunk_size)
+            effective_chunk = chunk_size - 2 * overlap
+            num_chunks = math.ceil(W / effective_chunk)
             chunks = []
             weights = []  # For overlap blending
+            chunk_starts = []  # Track start positions
             
             for i in range(num_chunks):
                 # Clear cache before processing chunk
                 torch.cuda.empty_cache()
                 
                 # Calculate chunk boundaries with overlap
-                start_w = max(0, i * chunk_size - overlap)
-                end_w = min((i + 1) * chunk_size + overlap, W)
-                chunk_width = (end_w - start_w) // 8  # Account for VAE downscaling
+                start_w = max(0, i * effective_chunk - overlap)
+                end_w = min((i + 1) * effective_chunk + overlap, W)
+                chunk_starts.append(start_w)
                 
                 # Process chunk
                 chunk_x = x[..., start_w:end_w]
                 chunk_latents = self.vae.encode(chunk_x).latent_dist.sample()
                 chunk_latents = chunk_latents * self.vae.config.scaling_factor
                 
-                # Create blending weights for exact chunk width
+                # Create blending weights
                 weight = torch.ones_like(chunk_latents)
                 if i > 0:  # Left overlap
-                    left_size = min(overlap // 8, chunk_width)  # Account for VAE downscaling
+                    left_size = overlap // 8
                     weight[..., :left_size] = torch.linspace(0, 1, left_size, device=weight.device).view(1, 1, 1, 1, -1)
                 if i < num_chunks - 1:  # Right overlap
-                    right_size = min(overlap // 8, chunk_width)  # Account for VAE downscaling
+                    right_size = overlap // 8
                     weight[..., -right_size:] = torch.linspace(1, 0, right_size, device=weight.device).view(1, 1, 1, 1, -1)
                 
                 chunks.append(chunk_latents)
@@ -374,12 +375,11 @@ class CogVideoXInpaintingPipeline:
             final_latents = torch.zeros(B, 16, T//2, H//8, W//8, device=x.device, dtype=torch.float16)
             weight_sum = torch.zeros_like(final_latents)
             
-            offset = 0
-            for chunk, weight in zip(chunks, weights):
+            for chunk, weight, start_w in zip(chunks, weights, chunk_starts):
+                start_idx = start_w // 8  # Convert to latent space
                 chunk_width = chunk.shape[-1]
-                final_latents[..., offset:offset + chunk_width] += chunk * weight
-                weight_sum[..., offset:offset + chunk_width] += weight
-                offset += chunk_size // 8  # Account for VAE downscaling
+                final_latents[..., start_idx:start_idx + chunk_width] += chunk * weight
+                weight_sum[..., start_idx:start_idx + chunk_width] += weight
             
             # Normalize by weight sum
             final_latents = final_latents / (weight_sum + 1e-8)
@@ -405,34 +405,35 @@ class CogVideoXInpaintingPipeline:
         B, C, T, H, W = latents.shape
         
         # Process in chunks if input is large
-        if chunk_size is not None and W > chunk_size // 8:  # Compare with scaled chunk size
+        if chunk_size is not None and W * 8 > chunk_size:  # Compare in pixel space
             # Calculate effective chunk size with overlap
-            chunk_size = (chunk_size - 2 * overlap) // 8  # Work in latent space dimensions
-            num_chunks = math.ceil(W / chunk_size)
+            effective_chunk = (chunk_size - 2 * overlap) // 8  # Work in latent space
+            num_chunks = math.ceil(W / effective_chunk)
             chunks = []
             weights = []  # For overlap blending
+            chunk_starts = []  # Track start positions
             
             for i in range(num_chunks):
                 # Clear cache before processing chunk
                 torch.cuda.empty_cache()
                 
                 # Calculate chunk boundaries with overlap
-                start_w = max(0, i * chunk_size - overlap // 8)
-                end_w = min((i + 1) * chunk_size + overlap // 8, W)
-                chunk_width = end_w - start_w
+                start_w = max(0, i * effective_chunk - overlap // 8)
+                end_w = min((i + 1) * effective_chunk + overlap // 8, W)
+                chunk_starts.append(start_w)
                 
                 # Process chunk
                 chunk_latents = latents[..., start_w:end_w]
                 chunk_latents = 1 / self.vae.config.scaling_factor * chunk_latents
                 chunk_video = self.vae.decode(chunk_latents).sample
                 
-                # Create blending weights for exact chunk width
+                # Create blending weights
                 weight = torch.ones_like(chunk_video)
                 if i > 0:  # Left overlap
-                    left_size = min(overlap, chunk_width * 8)  # Back to pixel space
+                    left_size = overlap
                     weight[..., :left_size] = torch.linspace(0, 1, left_size, device=weight.device).view(1, 1, 1, 1, -1)
                 if i < num_chunks - 1:  # Right overlap
-                    right_size = min(overlap, chunk_width * 8)  # Back to pixel space
+                    right_size = overlap
                     weight[..., -right_size:] = torch.linspace(1, 0, right_size, device=weight.device).view(1, 1, 1, 1, -1)
                 
                 chunks.append(chunk_video)
@@ -445,12 +446,11 @@ class CogVideoXInpaintingPipeline:
             final_video = torch.zeros(B, C, 8, H*8, W*8, device=latents.device, dtype=torch.float16)
             weight_sum = torch.zeros_like(final_video)
             
-            offset = 0
-            for chunk, weight in zip(chunks, weights):
+            for chunk, weight, start_w in zip(chunks, weights, chunk_starts):
+                start_idx = start_w * 8  # Convert to pixel space
                 chunk_width = chunk.shape[-1]
-                final_video[..., offset:offset + chunk_width] += chunk * weight
-                weight_sum[..., offset:offset + chunk_width] += weight
-                offset += chunk_size * 8  # Back to pixel space
+                final_video[..., start_idx:start_idx + chunk_width] += chunk * weight
+                weight_sum[..., start_idx:start_idx + chunk_width] += weight
             
             # Normalize by weight sum
             final_video = final_video / (weight_sum + 1e-8)
