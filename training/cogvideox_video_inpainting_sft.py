@@ -1,5 +1,5 @@
 # Import components
-from .components import (
+from training.components import (
     pad_to_multiple,
     unpad,
     temporal_smooth,
