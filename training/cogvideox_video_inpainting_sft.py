@@ -220,6 +220,61 @@ def compute_loss(model_pred: torch.Tensor, noise: torch.Tensor, mask: torch.Tens
     
     return loss
 
+def compute_loss_v_pred(noise_pred, noise, alpha_prod_t, sigma_t, mask=None, noisy_frames=None):
+    """Compute loss for velocity prediction."""
+    # Convert noise prediction to v-prediction target
+    v_target = (alpha_prod_t ** (0.5) * noise - sigma_t * noise_pred) / (alpha_prod_t ** (0.5))
+    
+    if mask is not None and noisy_frames is not None:
+        # Apply mask to both prediction and target
+        masked_pred = noise_pred * mask
+        masked_target = v_target * mask
+        return F.mse_loss(masked_pred, masked_target)
+    
+    return F.mse_loss(noise_pred, v_target)
+
+def compute_snr(timesteps, scheduler):
+    """Compute SNR for given timesteps."""
+    alphas_cumprod = scheduler.alphas_cumprod
+    sqrt_alphas_cumprod = alphas_cumprod ** 0.5
+    sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
+    
+    # Compute SNR
+    snr = (sqrt_alphas_cumprod / sqrt_one_minus_alphas_cumprod) ** 2
+    return snr[timesteps]
+
+def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=None, noisy_frames=None):
+    """Compute v-prediction loss with SNR rescaling."""
+    # Get scheduler parameters
+    alphas_cumprod = scheduler.alphas_cumprod
+    alpha_prod_t = alphas_cumprod[timesteps].view(-1, 1, 1, 1, 1)
+    beta_prod_t = 1 - alpha_prod_t
+    sigma_t = beta_prod_t ** (0.5)
+    
+    # Compute v-prediction target
+    v_target = (alpha_prod_t ** (0.5) * noise - sigma_t * noise_pred) / (alpha_prod_t ** (0.5))
+    
+    # Compute SNR weights
+    snr = compute_snr(timesteps, scheduler)
+    mse_loss_weights = (
+        torch.stack([snr, scheduler.snr_shift_scale * torch.ones_like(snr)], dim=1).min(dim=1)[0]
+        / snr
+    )
+    
+    # Apply mask if provided
+    if mask is not None and noisy_frames is not None:
+        masked_pred = noise_pred * mask
+        masked_target = v_target * mask
+        loss = F.mse_loss(masked_pred, masked_target, reduction='none')
+    else:
+        loss = F.mse_loss(noise_pred, v_target, reduction='none')
+    
+    # Apply SNR weights
+    loss = loss.mean(dim=list(range(1, len(loss.shape))))
+    loss = (loss * mse_loss_weights).mean()
+    
+    return loss
+
 class CogVideoXInpaintingPipeline:
     def __init__(
         self,
@@ -694,6 +749,44 @@ def log_validation(
     pipeline.transformer.train()
     pipeline.vae.train()
 
+def gelu_approximate(x):
+    """Approximate GELU activation function."""
+    return x * 0.5 * (1.0 + torch.tanh(0.7978845608028654 * x * (1 + 0.044715 * x * x)))
+
+def handle_vae_temporal_output(decoded, target_frames):
+    """Handle potential temporal expansion from VAE."""
+    if decoded.shape[2] > target_frames:
+        # Take center frames if output is expanded
+        start_idx = (decoded.shape[2] - target_frames) // 2
+        return decoded[:, :, start_idx:start_idx + target_frames]
+    return decoded
+
+def apply_rotary_pos_emb(x, cos, sin, position_ids):
+    """Apply rotary position embeddings to input tensor."""
+    # Rotary embeddings
+    cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
+    sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
+    
+    # Apply rotation
+    x_embed = (x * cos) + (rotate_half(x) * sin)
+    return x_embed
+
+def rotate_half(x):
+    """Rotate half the hidden dims of the input."""
+    x1 = x[..., :x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2:]
+    return torch.cat((-x2, x1), dim=-1)
+
+def create_layer_norm(hidden_dim, model_config, device, dtype):
+    """Create layer normalization with correct configuration."""
+    return nn.LayerNorm(
+        hidden_dim,
+        eps=model_config.norm_eps,
+        elementwise_affine=model_config.norm_elementwise_affine,
+        device=device,
+        dtype=dtype
+    )
+
 def train_loop(
     config,
     model,
@@ -717,8 +810,33 @@ def train_loop(
     progress_bar.set_description("Steps")
     global_step = start_global_step
     
-    # Get model dtype
+    # Get model dtype and config
     model_dtype = next(model.parameters()).dtype
+    
+    # Verify model configuration
+    assert model.config.use_rotary_positional_embeddings, "Rotary embeddings should be enabled"
+    assert not model.config.use_learned_positional_embeddings, "Learned embeddings should be disabled"
+    assert model.config.activation_fn == "gelu-approximate", "Unexpected activation function"
+    assert model.config.timestep_activation_fn == "silu", "Unexpected timestep activation function"
+    assert model.config.norm_elementwise_affine, "Layer norm should use elementwise affine"
+    assert model.config.norm_eps == 1e-5, f"Unexpected norm epsilon: {model.config.norm_eps}"
+    
+    # VAE has 2.5x temporal compression and 8x spatial
+    vae_temporal_ratio = 2.5
+    vae_spatial_ratio = 8
+    
+    # Create rotary embedding cache
+    max_position_embeddings = 512
+    base = 10000
+    inv_freq = 1.0 / (base ** (torch.arange(0, model.config.attention_head_dim, 2).float().to(model.device) / model.config.attention_head_dim))
+    
+    # Create layer norm for hidden states
+    hidden_norm = create_layer_norm(
+        model.config.hidden_size,
+        model.config,
+        model.device,
+        model_dtype
+    )
     
     # Training loop
     for epoch in range(num_train_epochs):
@@ -733,36 +851,101 @@ def train_loop(
                 
             with accelerator.accumulate(model):
                 # Get input tensors and ensure correct dtype
-                clean_frames = batch["rgb"].to(dtype=model_dtype)  # [B, 3, T, H, W]
+                clean_frames = batch["rgb"].to(dtype=model_dtype)  # [B, C, T, H, W]
                 mask = batch["mask"].to(dtype=model_dtype)
                 
-                # Convert RGB frames to latent space (16 channels)
-                clean_frames = model.patch_embed.proj(clean_frames)  # [B, 16, T, H, W]
+                # Calculate required input frames for VAE
+                B, C, T, H, W = clean_frames.shape
+                target_frames = int(T * vae_temporal_ratio)
                 
-                # Sample noise and add to frames
-                noise = torch.randn_like(clean_frames)
+                # Adjust temporal and spatial dimensions
+                if T != target_frames:
+                    clean_frames = F.interpolate(
+                        clean_frames,
+                        size=(target_frames, H//vae_spatial_ratio, W//vae_spatial_ratio),
+                        mode='trilinear',
+                        align_corners=False
+                    )
+                else:
+                    # Just handle spatial downsampling
+                    clean_frames = F.interpolate(
+                        clean_frames,
+                        size=(T, H//vae_spatial_ratio, W//vae_spatial_ratio),
+                        mode='bilinear',
+                        align_corners=False
+                    )
+                
+                # Test VAE encoding/decoding and handle temporal expansion
+                latent = vae.encode(clean_frames).latent_dist.sample()
+                decoded = vae.decode(latent)
+                decoded = handle_vae_temporal_output(decoded, clean_frames.shape[2])
+                
+                # Verify temporal dimension matches
+                assert decoded.shape[2] == clean_frames.shape[2], \
+                    f"VAE output frames {decoded.shape[2]} doesn't match input frames {clean_frames.shape[2]}"
+                
+                # Convert to [B, T, C, H, W] format for transformer
+                clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
+                
+                # Create position IDs for rotary embeddings
+                position_ids = torch.arange(clean_frames.shape[1], device=clean_frames.device)
+                
+                # Apply patch embedding
+                B, T, C, H, W = clean_frames.shape
+                clean_frames = model.patch_embed.proj(clean_frames.reshape(-1, C, H, W))  # [B*T, 3072, H//2, W//2]
+                
+                # Reshape back maintaining [B, T, C, H, W] format
+                _, C_latent, H_latent, W_latent = clean_frames.shape
+                clean_frames = clean_frames.reshape(B, T, C_latent, H_latent, W_latent)
+                
+                # Apply layer normalization to hidden states
+                clean_frames = hidden_norm(clean_frames)
+                
+                # Convert to [B, C, T, H, W] for scheduler operations
+                clean_frames_scheduler = clean_frames.permute(0, 2, 1, 3, 4)
+                
+                # Sample noise and add noise in scheduler format
+                noise = torch.randn_like(clean_frames_scheduler)
                 timesteps = torch.randint(
                     0, noise_scheduler.config.num_train_timesteps, (clean_frames.shape[0],), 
                     device=clean_frames.device
-                ).to(dtype=model_dtype)  # Match model dtype
-                noisy_frames = noise_scheduler.add_noise(clean_frames, noise, timesteps)
+                ).to(dtype=model_dtype)
+                noisy_frames = noise_scheduler.add_noise(clean_frames_scheduler, noise, timesteps)
                 
-                # Create empty encoder hidden states (no text conditioning during training)
+                # Convert back to transformer format [B, T, C, H, W]
+                noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
+                
+                # Create encoder hidden states
                 encoder_hidden_states = torch.zeros(
-                    clean_frames.shape[0], 1, 4096,
+                    clean_frames.shape[0], 1, model.config.text_embed_dim,
                     device=clean_frames.device,
                     dtype=model_dtype
                 )
                 
-                # Get model prediction
+                # Get model prediction with position IDs
                 noise_pred = model(
                     hidden_states=noisy_frames,
                     timestep=timesteps,
                     encoder_hidden_states=encoder_hidden_states,
+                    position_ids=position_ids,
                 ).sample
                 
-                # Compute loss
-                loss = compute_loss(noise_pred, noise, mask, noisy_frames)
+                # Verify no NaN values from activations or normalization
+                if torch.isnan(noise_pred).any():
+                    raise ValueError("Model output contains NaN values - possible activation or normalization issue")
+                
+                # Convert predictions to scheduler format for loss computation
+                noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
+                
+                # Compute loss with SNR rescaling
+                loss = compute_loss_v_pred_with_snr(
+                    noise_pred_scheduler, noise, timesteps, noise_scheduler,
+                    mask=mask, noisy_frames=noisy_frames.permute(0, 2, 1, 3, 4)
+                )
+                
+                # Verify loss is valid
+                if torch.isnan(loss).any():
+                    raise ValueError("Loss contains NaN values - possible activation or normalization issue")
                 
                 # Backprop
                 accelerator.backward(loss)
@@ -814,7 +997,7 @@ def train_loop(
                                 timestep=timesteps,
                                 encoder_hidden_states=None,  # No text conditioning during training
                             ).sample
-                            val_loss += compute_loss(noise_pred, noise, mask, clean_frames).item()
+                            val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
                     
                     val_loss /= len(val_dataloader)
                     accelerator.log(

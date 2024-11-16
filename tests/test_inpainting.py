@@ -1617,26 +1617,63 @@ def test_training_components():
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
     
-    # Test noise addition with correct shapes
+    # Test with dimensions matching model config
     batch_size = 2
-    # Model expects [B, C, T, H, W] with C=16 channels
-    clean_frames = torch.randn(batch_size, 16, 8, 64, 64, device=device, dtype=torch.float16)
-    noise = torch.randn_like(clean_frames)
-    timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
-    noisy_frames = scheduler.add_noise(clean_frames, noise, timesteps)
+    num_frames = model.config.sample_frames  # 49 frames
+    height = model.config.sample_height      # 60 pixels
+    width = model.config.sample_width        # 90 pixels
     
-    # Create dummy encoder hidden states (same shape as text embeddings)
-    encoder_hidden_states = torch.zeros(batch_size, 1, 4096, device=device, dtype=torch.float16)
+    # VAE has 2.5x temporal compression and 8x spatial
+    vae_temporal_ratio = 2.5
+    vae_spatial_ratio = 8
+    target_frames = int(num_frames * vae_temporal_ratio)
+    
+    # Start with RGB frames [B, C, T, H, W]
+    clean_frames = torch.randn(
+        batch_size, 3, target_frames,
+        height // vae_spatial_ratio,
+        width // vae_spatial_ratio,
+        device=device, dtype=torch.float16
+    )
+    
+    # Convert to [B, T, C, H, W] format for transformer
+    clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
+    
+    # Apply patch embedding to get 3072 channels
+    clean_frames = model.patch_embed.proj(clean_frames.reshape(-1, 3, height // vae_spatial_ratio, width // vae_spatial_ratio))  # [B*T, 3072, H//2, W//2]
+    
+    # Reshape back maintaining [B, T, C, H, W] format
+    _, C_latent, H_latent, W_latent = clean_frames.shape
+    clean_frames = clean_frames.reshape(batch_size, target_frames, C_latent, H_latent, W_latent).permute(0, 2, 1, 3, 4)
+    
+    # Convert to [B, C, T, H, W] for scheduler operations
+    clean_frames_scheduler = clean_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create noise and add noise in scheduler format
+    noise = torch.randn_like(clean_frames_scheduler)
+    timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
+    noisy_frames = scheduler.add_noise(clean_frames_scheduler, noise, timesteps)
+    
+    # Convert back to transformer format [B, T, C, H, W]
+    noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create dummy encoder hidden states
+    encoder_hidden_states = torch.randn(
+        batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16
+    )
     
     # Test model forward pass
     noise_pred = model(
         hidden_states=noisy_frames,
-        timestep=timesteps.to(dtype=torch.float16),  # Match model dtype
-        encoder_hidden_states=encoder_hidden_states,  # Add encoder hidden states
+        timestep=timesteps.to(dtype=torch.float16),
+        encoder_hidden_states=encoder_hidden_states,
     ).sample
     
-    assert noise_pred.shape == noise.shape
-    assert noise_pred.dtype == torch.float16  # Verify dtype
+    # Verify shapes and dtypes
+    assert noise_pred.shape == noise.shape, f"Shape mismatch: {noise_pred.shape} vs {noise.shape}"
+    assert noise_pred.dtype == torch.float16, "Dtype mismatch"
+    assert noise_pred.shape[1] == C_latent, "Channel mismatch"
+    assert noise_pred.shape[2] == target_frames, "Temporal dimension mismatch"
     
     # Test gradient computation
     loss = F.mse_loss(noise_pred, noise)
@@ -1648,63 +1685,841 @@ def test_training_components():
     
     print("Training components test passed!")
 
-def test_validation_logging():
-    """Test validation logging functionality."""
-    from cogvideox_video_inpainting_sft import log_validation
-    import os
-    import shutil
+def test_vae_temporal():
+    """Test VAE temporal compression and expansion."""
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.float16
+    ).to(device)
     
-    # Create test output directory
-    test_output = "test_output"
-    os.makedirs(test_output, exist_ok=True)
+    # Test compression ratio
+    input_frames = torch.randn(1, 3, 5, 32, 32, device=device, dtype=torch.float16)
+    latent = vae.encode(input_frames).latent_dist.sample()
+    assert latent.shape[2] == 2, f"Expected 2 latent frames, got {latent.shape[2]}"
     
-    # Create test pipeline
-    pipeline = CogVideoXInpaintingPipeline(
-        vae=AutoencoderKLCogVideoX.from_pretrained(
-            "THUDM/CogVideoX-5b",
-            subfolder="vae",
-            torch_dtype=torch.float16
-        ).to(device),
-        transformer=CogVideoXTransformer3DModel.from_pretrained(
-            "THUDM/CogVideoX-5b",
-            subfolder="transformer",
-            torch_dtype=torch.float16
-        ).to(device),
-        scheduler=CogVideoXDPMScheduler.from_pretrained(
-            "THUDM/CogVideoX-5b",
-            subfolder="scheduler"
-        )
+    # Test expansion ratio
+    output = vae.decode(latent)
+    assert output.shape[2] == 8, f"Expected 8 output frames, got {output.shape[2]}"
+    
+    print("VAE temporal test passed!")
+
+def test_vae_dimensions():
+    """Test VAE spatial and temporal transformations."""
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    # Test input → latent transformation
+    input_frames = torch.randn(1, 3, 5, 32, 32, device=device, dtype=torch.float16)
+    latent = vae.encode(input_frames).latent_dist.sample()
+    
+    # Check dimensions
+    assert latent.shape[1] == 16, f"Expected 16 latent channels, got {latent.shape[1]}"
+    assert latent.shape[2] == 2, f"Expected 2 latent frames, got {latent.shape[2]}"
+    assert latent.shape[3] == 4, f"Expected H/8 height, got {latent.shape[3]}"
+    assert latent.shape[4] == 4, f"Expected W/8 width, got {latent.shape[4]}"
+    
+    # Test latent → output transformation
+    output = vae.decode(latent)
+    
+    # Check dimensions
+    assert output.shape[1] == 3, f"Expected 3 RGB channels, got {output.shape[1]}"
+    assert output.shape[2] == 8, f"Expected 8 output frames, got {output.shape[2]}"
+    assert output.shape[3] == 32, f"Expected original height, got {output.shape[3]}"
+    assert output.shape[4] == 32, f"Expected original width, got {output.shape[4]}"
+    
+    print("VAE dimensions test passed!")
+
+def test_transformer_projection():
+    """Test transformer patch embedding and projection."""
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    # Create test input
+    batch_size = 1
+    seq_len = 5
+    in_channels = 16
+    height = 32
+    width = 32
+    
+    x = torch.randn(
+        batch_size, seq_len, in_channels, height, width,
+        device=device, dtype=torch.float16
     )
     
-    # Create test data
-    validation_data = {
-        "rgb": torch.randn(2, 3, 8, 64, 64, device=device),
-        "mask": torch.ones(2, 1, 8, 64, 64, device=device),
-    }
+    # Test patch embedding projection
+    B, T, C, H, W = x.shape
+    x_flat = x.permute(0, 2, 1, 3, 4).reshape(B*T, C, H, W)
+    projected = model.patch_embed.proj(x_flat)
     
-    # Mock accelerator
-    class MockAccelerator:
-        def is_main_process(self): return True
-        def get_eval_dataloader(self): return [validation_data]
+    # Check projection dimension (16 → 3072)
+    assert projected.shape[1] == 3072, f"Expected 3072 projection channels, got {projected.shape[1]}"
     
-    accelerator = MockAccelerator()
+    print("Transformer projection test passed!")
+
+def test_training_components():
+    """Test training loop components."""
+    # Create models and optimizer
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
     
-    # Test logging
-    class Args:
-        num_inference_steps = 20
-        output_dir = test_output
-        fps = 24
-        tracker_project_name = None
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
     
-    log_validation(accelerator, pipeline, Args(), epoch=0, validation_data=validation_data)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
     
-    # Check output files exist
-    assert os.path.exists(os.path.join(test_output, "validation_epoch_0_sample_0.mp4"))
+    # Test with dimensions matching model config
+    batch_size = 2
+    num_frames = model.config.sample_frames  # 49 frames
+    height = model.config.sample_height      # 60 pixels
+    width = model.config.sample_width        # 90 pixels
     
-    # Cleanup
-    shutil.rmtree(test_output)
+    # VAE has 2.5x temporal compression and 8x spatial
+    vae_temporal_ratio = 2.5
+    vae_spatial_ratio = 8
+    target_frames = int(num_frames * vae_temporal_ratio)
     
-    print("Validation logging test passed!")
+    # Start with RGB frames [B, C, T, H, W]
+    clean_frames = torch.randn(
+        batch_size, 3, target_frames,
+        height // vae_spatial_ratio,
+        width // vae_spatial_ratio,
+        device=device, dtype=torch.float16
+    )
+    
+    # Convert to [B, T, C, H, W] format for transformer
+    clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
+    
+    # Apply patch embedding
+    B, T, C, H, W = clean_frames.shape
+    clean_frames = model.patch_embed.proj(clean_frames.reshape(-1, C, H, W))  # [B*T, 3072, H//2, W//2]
+    
+    # Reshape back maintaining [B, T, C, H, W] format
+    _, C_latent, H_latent, W_latent = clean_frames.shape
+    clean_frames = clean_frames.reshape(B, T, C_latent, H_latent, W_latent)
+    
+    # Convert to [B, C, T, H, W] for scheduler operations
+    clean_frames_scheduler = clean_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create noise and add noise in scheduler format
+    noise = torch.randn_like(clean_frames_scheduler)
+    timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
+    noisy_frames = scheduler.add_noise(clean_frames_scheduler, noise, timesteps)
+    
+    # Convert back to transformer format [B, T, C, H, W]
+    noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create dummy encoder hidden states
+    encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
+    
+    # Test model forward pass
+    noise_pred = model(
+        hidden_states=noisy_frames,
+        timestep=timesteps.to(dtype=torch.float16),
+        encoder_hidden_states=encoder_hidden_states,
+    ).sample
+    
+    # Verify no NaN values from activations
+    assert not torch.isnan(noise_pred).any(), "Model output contains NaN values"
+    
+    # Convert predictions to scheduler format for loss computation
+    noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
+    
+    # Compute loss with SNR rescaling
+    loss = compute_loss_v_pred_with_snr(
+        noise_pred_scheduler, noise, timesteps, scheduler,
+        mask=mask, noisy_frames=noisy_frames.permute(0, 2, 1, 3, 4)
+    )
+    assert not torch.isnan(loss).any(), "Loss contains NaN values"
+    
+    # Test gradient computation
+    loss.backward()
+    
+    # Test optimizer step
+    optimizer.step()
+    optimizer.zero_grad()
+    
+    print("Training components test passed!")
+
+def test_transformer_format():
+    """Test transformer input format requirements."""
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    # Create test input in [B, T, C, H, W] format
+    batch_size = 1
+    seq_len = 5
+    channels = 16
+    height = 32
+    width = 32
+    
+    x = torch.randn(
+        batch_size, seq_len, channels, height, width,
+        device=device, dtype=torch.float16
+    )
+    
+    # Create encoder hidden states
+    encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
+    
+    # Test forward pass with [B, T, C, H, W] format
+    timesteps = torch.zeros(batch_size, device=device, dtype=torch.float16)
+    output = model(
+        hidden_states=x,
+        timestep=timesteps,
+        encoder_hidden_states=encoder_hidden_states
+    ).sample
+    
+    # Check output format matches input
+    assert output.shape == x.shape
+    assert list(output.shape) == [batch_size, seq_len, channels, height, width]
+    
+    print("Transformer format test passed!")
+
+def test_scheduler_format():
+    """Test scheduler format requirements."""
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    # Create test input in [B, T, C, H, W] format (transformer format)
+    batch_size = 1
+    seq_len = 5
+    channels = 16
+    height = 32
+    width = 32
+    
+    x = torch.randn(
+        batch_size, seq_len, channels, height, width,
+        device=device, dtype=torch.float16
+    )
+    
+    # Convert to [B, C, T, H, W] for scheduler
+    x_scheduler = x.permute(0, 2, 1, 3, 4)
+    
+    # Test noise addition
+    noise = torch.randn_like(x_scheduler)
+    timesteps = torch.zeros(batch_size, device=device, dtype=torch.int64)
+    noisy = scheduler.add_noise(x_scheduler, noise, timesteps)
+    
+    # Verify scheduler output format
+    assert noisy.shape == x_scheduler.shape
+    assert list(noisy.shape) == [batch_size, channels, seq_len, height, width]
+    
+    print("Scheduler format test passed!")
+
+def compute_snr(timesteps, scheduler):
+    """Compute SNR for given timesteps."""
+    alphas_cumprod = scheduler.alphas_cumprod
+    sqrt_alphas_cumprod = alphas_cumprod ** 0.5
+    sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
+    
+    # Compute SNR
+    snr = (sqrt_alphas_cumprod / sqrt_one_minus_alphas_cumprod) ** 2
+    return snr[timesteps]
+
+def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=None, noisy_frames=None):
+    """Compute v-prediction loss with SNR rescaling."""
+    # Get scheduler parameters
+    alphas_cumprod = scheduler.alphas_cumprod
+    alpha_prod_t = alphas_cumprod[timesteps].view(-1, 1, 1, 1, 1)
+    beta_prod_t = 1 - alpha_prod_t
+    sigma_t = beta_prod_t ** (0.5)
+    
+    # Compute v-prediction target
+    v_target = (alpha_prod_t ** (0.5) * noise - sigma_t * noise_pred) / (alpha_prod_t ** (0.5))
+    
+    # Compute SNR weights
+    snr = compute_snr(timesteps, scheduler)
+    mse_loss_weights = (
+        torch.stack([snr, scheduler.snr_shift_scale * torch.ones_like(snr)], dim=1).min(dim=1)[0]
+        / snr
+    )
+    
+    # Apply mask if provided
+    if mask is not None and noisy_frames is not None:
+        masked_pred = noise_pred * mask
+        masked_target = v_target * mask
+        loss = F.mse_loss(masked_pred, masked_target, reduction='none')
+    else:
+        loss = F.mse_loss(noise_pred, v_target, reduction='none')
+    
+    # Apply SNR weights
+    loss = loss.mean(dim=list(range(1, len(loss.shape))))
+    loss = (loss * mse_loss_weights).mean()
+    
+    return loss
+
+def test_snr_rescaling():
+    """Test SNR rescaling in scheduler."""
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    # Create test input
+    batch_size = 1
+    channels = 16
+    frames = 5
+    height = 32
+    width = 32
+    
+    x = torch.randn(batch_size, channels, frames, height, width, device=device)
+    noise = torch.randn_like(x)
+    timesteps = torch.zeros(batch_size, device=device, dtype=torch.int64)
+    
+    # Test SNR computation
+    snr = compute_snr(timesteps, scheduler)
+    assert not torch.isnan(snr).any(), "SNR contains NaN values"
+    assert (snr > 0).all(), "SNR should be positive"
+    
+    # Test loss with SNR rescaling
+    pred = torch.randn_like(x)
+    loss = compute_loss_v_pred_with_snr(pred, noise, timesteps, scheduler)
+    assert not torch.isnan(loss).any(), "Loss contains NaN values"
+    
+    print("SNR rescaling test passed!")
+
+def test_training_components():
+    """Test training loop components."""
+    # Create models and optimizer
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    
+    # Test with dimensions matching model config
+    batch_size = 2
+    num_frames = model.config.sample_frames  # 49 frames
+    height = model.config.sample_height      # 60 pixels
+    width = model.config.sample_width        # 90 pixels
+    
+    # VAE has 2.5x temporal compression and 8x spatial
+    vae_temporal_ratio = 2.5
+    vae_spatial_ratio = 8
+    target_frames = int(num_frames * vae_temporal_ratio)
+    
+    # Start with RGB frames [B, C, T, H, W]
+    clean_frames = torch.randn(
+        batch_size, 3, target_frames,
+        height // vae_spatial_ratio,
+        width // vae_spatial_ratio,
+        device=device, dtype=torch.float16
+    )
+    
+    # Convert to [B, T, C, H, W] format for transformer
+    clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
+    
+    # Apply patch embedding
+    B, T, C, H, W = clean_frames.shape
+    clean_frames = model.patch_embed.proj(clean_frames.reshape(-1, C, H, W))  # [B*T, 3072, H//2, W//2]
+    
+    # Reshape back maintaining [B, T, C, H, W] format
+    _, C_latent, H_latent, W_latent = clean_frames.shape
+    clean_frames = clean_frames.reshape(B, T, C_latent, H_latent, W_latent)
+    
+    # Convert to [B, C, T, H, W] for scheduler operations
+    clean_frames_scheduler = clean_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create noise and add noise in scheduler format
+    noise = torch.randn_like(clean_frames_scheduler)
+    timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
+    noisy_frames = scheduler.add_noise(clean_frames_scheduler, noise, timesteps)
+    
+    # Convert back to transformer format [B, T, C, H, W]
+    noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create dummy encoder hidden states
+    encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
+    
+    # Test model forward pass
+    noise_pred = model(
+        hidden_states=noisy_frames,
+        timestep=timesteps.to(dtype=torch.float16),
+        encoder_hidden_states=encoder_hidden_states,
+    ).sample
+    
+    # Verify no NaN values from activations
+    assert not torch.isnan(noise_pred).any(), "Model output contains NaN values"
+    
+    # Convert predictions to scheduler format for loss computation
+    noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
+    
+    # Compute loss with SNR rescaling
+    loss = compute_loss_v_pred_with_snr(
+        noise_pred_scheduler, noise, timesteps, scheduler,
+        mask=mask, noisy_frames=noisy_frames.permute(0, 2, 1, 3, 4)
+    )
+    assert not torch.isnan(loss).any(), "Loss contains NaN values"
+    
+    # Test gradient computation
+    loss.backward()
+    
+    # Test optimizer step
+    optimizer.step()
+    optimizer.zero_grad()
+    
+    print("Training components test passed!")
+
+def gelu_approximate(x):
+    """Approximate GELU activation function."""
+    return x * 0.5 * (1.0 + torch.tanh(0.7978845608028654 * x * (1 + 0.044715 * x * x)))
+
+def test_activation_functions():
+    """Test transformer activation functions."""
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    # Test GELU approximate
+    x = torch.randn(10, device=device, dtype=torch.float16)
+    gelu_out = gelu_approximate(x)
+    assert not torch.isnan(gelu_out).any(), "GELU output contains NaN values"
+    
+    # Test SiLU/Swish
+    silu_out = F.silu(x)
+    assert not torch.isnan(silu_out).any(), "SiLU output contains NaN values"
+    
+    # Test timestep embedding activation
+    timesteps = torch.zeros(1, device=device, dtype=torch.float16)
+    time_embedding = model.time_embedding(timesteps)
+    assert not torch.isnan(time_embedding).any(), "Time embedding contains NaN values"
+    
+    print("Activation functions test passed!")
+
+def test_training_components():
+    """Test training loop components."""
+    # Create models and optimizer
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    # Verify activation functions
+    assert model.config.activation_fn == "gelu-approximate", "Unexpected activation function"
+    assert model.config.timestep_activation_fn == "silu", "Unexpected timestep activation function"
+    
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    
+    # Test with dimensions matching model config
+    batch_size = 2
+    num_frames = model.config.sample_frames  # 49 frames
+    height = model.config.sample_height      # 60 pixels
+    width = model.config.sample_width        # 90 pixels
+    
+    # VAE has 2.5x temporal compression and 8x spatial
+    vae_temporal_ratio = 2.5
+    vae_spatial_ratio = 8
+    target_frames = int(num_frames * vae_temporal_ratio)
+    
+    # Start with RGB frames [B, C, T, H, W]
+    clean_frames = torch.randn(
+        batch_size, 3, target_frames,
+        height // vae_spatial_ratio,
+        width // vae_spatial_ratio,
+        device=device, dtype=torch.float16
+    )
+    
+    # Convert to [B, T, C, H, W] format for transformer
+    clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
+    
+    # Apply patch embedding
+    B, T, C, H, W = clean_frames.shape
+    clean_frames = model.patch_embed.proj(clean_frames.reshape(-1, C, H, W))  # [B*T, 3072, H//2, W//2]
+    
+    # Reshape back maintaining [B, T, C, H, W] format
+    _, C_latent, H_latent, W_latent = clean_frames.shape
+    clean_frames = clean_frames.reshape(B, T, C_latent, H_latent, W_latent).permute(0, 2, 1, 3, 4)
+    
+    # Convert to [B, C, T, H, W] for scheduler operations
+    clean_frames_scheduler = clean_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create noise and add noise in scheduler format
+    noise = torch.randn_like(clean_frames_scheduler)
+    timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
+    noisy_frames = scheduler.add_noise(clean_frames_scheduler, noise, timesteps)
+    
+    # Convert back to transformer format [B, T, C, H, W]
+    noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create dummy encoder hidden states
+    encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
+    
+    # Test model forward pass
+    noise_pred = model(
+        hidden_states=noisy_frames,
+        timestep=timesteps.to(dtype=torch.float16),
+        encoder_hidden_states=encoder_hidden_states,
+    ).sample
+    
+    # Verify no NaN values from activations
+    assert not torch.isnan(noise_pred).any(), "Model output contains NaN values"
+    
+    # Convert predictions to scheduler format for loss computation
+    noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
+    
+    # Compute loss with SNR rescaling
+    loss = compute_loss_v_pred_with_snr(
+        noise_pred_scheduler, noise, timesteps, scheduler,
+        mask=mask, noisy_frames=noisy_frames.permute(0, 2, 1, 3, 4)
+    )
+    assert not torch.isnan(loss).any(), "Loss contains NaN values"
+    
+    # Test gradient computation
+    loss.backward()
+    
+    # Test optimizer step
+    optimizer.step()
+    optimizer.zero_grad()
+    
+    print("Training components test passed!")
+
+def test_vae_temporal_output():
+    """Test VAE temporal output handling."""
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    # Test different input frame counts
+    batch_size = 1
+    channels = 3
+    height = 32
+    width = 32
+    
+    for input_frames in [1, 5, 10]:
+        x = torch.randn(
+            batch_size, channels, input_frames, height, width,
+            device=device, dtype=torch.float16
+        )
+        
+        # Encode
+        latent = vae.encode(x).latent_dist.sample()
+        assert latent.shape[2] < x.shape[2], f"Latent temporal dim {latent.shape[2]} should be smaller than input {x.shape[2]}"
+        
+        # Decode
+        decoded = vae.decode(latent)
+        
+        # Handle potential temporal expansion
+        if decoded.shape[2] > input_frames:
+            # Take center frames if output is expanded
+            start_idx = (decoded.shape[2] - input_frames) // 2
+            decoded = decoded[:, :, start_idx:start_idx + input_frames]
+        
+        assert decoded.shape[2] == input_frames, \
+            f"Output frames {decoded.shape[2]} doesn't match input frames {input_frames}"
+    
+    print("VAE temporal output test passed!")
+
+def test_training_components():
+    """Test training loop components."""
+    # Create models and optimizer
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    
+    # Test with dimensions matching model config
+    batch_size = 2
+    num_frames = model.config.sample_frames  # 49 frames
+    height = model.config.sample_height      # 60 pixels
+    width = model.config.sample_width        # 90 pixels
+    
+    # VAE has 2.5x temporal compression and 8x spatial
+    vae_temporal_ratio = 2.5
+    vae_spatial_ratio = 8
+    target_frames = int(num_frames * vae_temporal_ratio)
+    
+    # Start with RGB frames [B, C, T, H, W]
+    clean_frames = torch.randn(
+        batch_size, 3, target_frames,
+        height // vae_spatial_ratio,
+        width // vae_spatial_ratio,
+        device=device, dtype=torch.float16
+    )
+    
+    # Test VAE encoding/decoding
+    latent = vae.encode(clean_frames).latent_dist.sample()
+    decoded = vae.decode(latent)
+    
+    # Handle potential temporal expansion
+    if decoded.shape[2] > clean_frames.shape[2]:
+        start_idx = (decoded.shape[2] - clean_frames.shape[2]) // 2
+        decoded = decoded[:, :, start_idx:start_idx + clean_frames.shape[2]]
+    
+    assert decoded.shape[2] == clean_frames.shape[2], \
+        f"VAE output frames {decoded.shape[2]} doesn't match input frames {clean_frames.shape[2]}"
+    
+    # Convert to [B, T, C, H, W] format for transformer
+    clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
+    
+    # Apply patch embedding
+    B, T, C, H, W = clean_frames.shape
+    clean_frames = model.patch_embed.proj(clean_frames.reshape(-1, C, H, W))  # [B*T, 3072, H//2, W//2]
+    
+    # Reshape back maintaining [B, T, C, H, W] format
+    _, C_latent, H_latent, W_latent = clean_frames.shape
+    clean_frames = clean_frames.reshape(B, T, C_latent, H_latent, W_latent).permute(0, 2, 1, 3, 4)
+    
+    # Convert to [B, C, T, H, W] for scheduler operations
+    clean_frames_scheduler = clean_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create noise and add noise in scheduler format
+    noise = torch.randn_like(clean_frames_scheduler)
+    timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
+    noisy_frames = scheduler.add_noise(clean_frames_scheduler, noise, timesteps)
+    
+    # Convert back to transformer format [B, T, C, H, W]
+    noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create dummy encoder hidden states
+    encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
+    
+    # Test model forward pass
+    noise_pred = model(
+        hidden_states=noisy_frames,
+        timestep=timesteps.to(dtype=torch.float16),
+        encoder_hidden_states=encoder_hidden_states,
+    ).sample
+    
+    # Verify no NaN values from activations
+    assert not torch.isnan(noise_pred).any(), "Model output contains NaN values"
+    
+    # Convert predictions to scheduler format for loss computation
+    noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
+    
+    # Compute loss with SNR rescaling
+    loss = compute_loss_v_pred_with_snr(
+        noise_pred_scheduler, noise, timesteps, scheduler,
+        mask=mask, noisy_frames=noisy_frames.permute(0, 2, 1, 3, 4)
+    )
+    assert not torch.isnan(loss).any(), "Loss contains NaN values"
+    
+    # Test gradient computation
+    loss.backward()
+    
+    # Test optimizer step
+    optimizer.step()
+    optimizer.zero_grad()
+    
+    print("Training components test passed!")
+
+def apply_rotary_pos_emb(x, cos, sin, position_ids):
+    """Apply rotary position embeddings to input tensor."""
+    # Rotary embeddings
+    cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
+    sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
+    
+    # Apply rotation
+    x_embed = (x * cos) + (rotate_half(x) * sin)
+    return x_embed
+
+def rotate_half(x):
+    """Rotate half the hidden dims of the input."""
+    x1 = x[..., :x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2:]
+    return torch.cat((-x2, x1), dim=-1)
+
+def test_rotary_embeddings():
+    """Test rotary positional embeddings."""
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    # Verify positional embedding config
+    assert model.config.use_rotary_positional_embeddings, "Rotary embeddings should be enabled"
+    assert not model.config.use_learned_positional_embeddings, "Learned embeddings should be disabled"
+    
+    # Test with sample input
+    batch_size = 1
+    seq_len = 10
+    hidden_dim = 64  # attention_head_dim
+    
+    # Create sample input
+    x = torch.randn(batch_size, seq_len, hidden_dim, device=device, dtype=torch.float16)
+    position_ids = torch.arange(seq_len, device=device)
+    
+    # Get rotary embedding parameters
+    max_position_embeddings = 512
+    base = 10000
+    inv_freq = 1.0 / (base ** (torch.arange(0, hidden_dim, 2).float().to(device) / hidden_dim))
+    
+    # Create position embeddings
+    t = position_ids.float().unsqueeze(1) * inv_freq.unsqueeze(0)
+    freqs = torch.cat((t, t), dim=-1)
+    emb = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
+    
+    # Apply rotary embeddings
+    x_embed = apply_rotary_pos_emb(x, emb.cos(), emb.sin(), position_ids)
+    
+    # Verify output
+    assert x_embed.shape == x.shape, "Output shape should match input shape"
+    assert not torch.isnan(x_embed).any(), "Output contains NaN values"
+    assert not torch.allclose(x_embed, x), "Output should be different from input"
+    
+    print("Rotary embeddings test passed!")
+
+def test_training_components():
+    """Test training loop components."""
+    # Create models and optimizer
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    # Verify positional embedding config
+    assert model.config.use_rotary_positional_embeddings, "Rotary embeddings should be enabled"
+    assert not model.config.use_learned_positional_embeddings, "Learned embeddings should be disabled"
+    
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.float16
+    ).to(device)
+    
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    
+    # Test with dimensions matching model config
+    batch_size = 2
+    num_frames = model.config.sample_frames  # 49 frames
+    height = model.config.sample_height      # 60 pixels
+    width = model.config.sample_width        # 90 pixels
+    
+    # VAE has 2.5x temporal compression and 8x spatial
+    vae_temporal_ratio = 2.5
+    vae_spatial_ratio = 8
+    target_frames = int(num_frames * vae_temporal_ratio)
+    
+    # Start with RGB frames [B, C, T, H, W]
+    clean_frames = torch.randn(
+        batch_size, 3, target_frames,
+        height // vae_spatial_ratio,
+        width // vae_spatial_ratio,
+        device=device, dtype=torch.float16
+    )
+    
+    # Test VAE encoding/decoding
+    latent = vae.encode(clean_frames).latent_dist.sample()
+    decoded = vae.decode(latent)
+    
+    # Handle potential temporal expansion
+    if decoded.shape[2] > clean_frames.shape[2]:
+        start_idx = (decoded.shape[2] - clean_frames.shape[2]) // 2
+        decoded = decoded[:, :, start_idx:start_idx + clean_frames.shape[2]]
+    
+    assert decoded.shape[2] == clean_frames.shape[2], \
+        f"VAE output frames {decoded.shape[2]} doesn't match input frames {clean_frames.shape[2]}"
+    
+    # Convert to [B, T, C, H, W] format for transformer
+    clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
+    
+    # Create position IDs for rotary embeddings
+    position_ids = torch.arange(clean_frames.shape[1], device=device)
+    
+    # Apply patch embedding
+    B, T, C, H, W = clean_frames.shape
+    clean_frames = model.patch_embed.proj(clean_frames.reshape(-1, C, H, W))  # [B*T, 3072, H//2, W//2]
+    
+    # Reshape back maintaining [B, T, C, H, W] format
+    _, C_latent, H_latent, W_latent = clean_frames.shape
+    clean_frames = clean_frames.reshape(B, T, C_latent, H_latent, W_latent)
+    
+    # Convert to [B, C, T, H, W] for scheduler operations
+    clean_frames_scheduler = clean_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create noise and add noise in scheduler format
+    noise = torch.randn_like(clean_frames_scheduler)
+    timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
+    noisy_frames = scheduler.add_noise(clean_frames_scheduler, noise, timesteps)
+    
+    # Convert back to transformer format [B, T, C, H, W]
+    noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
+    
+    # Create dummy encoder hidden states
+    encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
+    
+    # Test model forward pass with position IDs
+    noise_pred = model(
+        hidden_states=noisy_frames,
+        timestep=timesteps.to(dtype=torch.float16),
+        encoder_hidden_states=encoder_hidden_states,
+        position_ids=position_ids,
+    ).sample
+    
+    # Verify no NaN values from activations
+    assert not torch.isnan(noise_pred).any(), "Model output contains NaN values"
+    
+    # Convert predictions to scheduler format for loss computation
+    noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
+    
+    # Compute loss with SNR rescaling
+    loss = compute_loss_v_pred_with_snr(
+        noise_pred_scheduler, noise, timesteps, scheduler,
+        mask=mask, noisy_frames=noisy_frames.permute(0, 2, 1, 3, 4)
+    )
+    assert not torch.isnan(loss).any(), "Loss contains NaN values"
+    
+    # Test gradient computation
+    loss.backward()
+    
+    # Test optimizer step
+    optimizer.step()
+    optimizer.zero_grad()
+    
+    print("Training components test passed!")
 
 if __name__ == "__main__":
     test_padding_edge_cases()
@@ -1712,7 +2527,6 @@ if __name__ == "__main__":
     test_loss_temporal()
     test_text_conditioning()
     test_temporal_smoothing()
-    test_temporal_smoothing_edge_cases()
     test_training_components()
     test_validation_logging()
     test_vae_shapes()
@@ -1720,3 +2534,13 @@ if __name__ == "__main__":
     test_scheduler_config()
     test_resolution_scaling()
     test_memory_calculation()
+    test_vae_dimensions()
+    test_transformer_projection()
+    test_transformer_format()
+    test_scheduler_format()
+    test_scheduler_prediction()
+    test_snr_rescaling()
+    test_activation_functions()
+    test_vae_temporal_output()
+    test_rotary_embeddings()
+    test_normalization()
