@@ -318,6 +318,16 @@ def main():
     logger.info("Starting model analysis...")
     
     try:
+        # Check CUDA availability
+        if not torch.cuda.is_available():
+            print("ERROR: CUDA is not available. This script requires a GPU to run efficiently.")
+            print("Available devices:", torch.cuda.device_count())
+            return
+        
+        device = torch.device("cuda")
+        print(f"Using device: {device} ({torch.cuda.get_device_name()})")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.0f}MB")
+        
         # Load VAE and analyze
         logger.info("\nStep 1/3: Loading VAE model from THUDM/CogVideoX-5b...")
         print("Downloading and loading VAE... (this might take a few minutes)")
@@ -325,6 +335,7 @@ def main():
             "THUDM/CogVideoX-5b",
             subfolder="vae",
             torch_dtype=torch.bfloat16,
+            device_map="auto",  # This will automatically place the model on GPU
         )
         print("VAE loaded successfully!")
         logger.info("Running VAE analysis...")
@@ -337,6 +348,7 @@ def main():
             "THUDM/CogVideoX-5b",
             subfolder="transformer",
             torch_dtype=torch.bfloat16,
+            device_map="auto",  # This will automatically place the model on GPU
         )
         print("Transformer loaded successfully!")
         logger.info("Running Transformer analysis...")
@@ -381,6 +393,12 @@ def main():
             json.dump(output, f, indent=2, default=str)
         print(f"Analysis saved to {output_file}")
         print("\nAnalysis completed successfully!")
+        
+        # Print GPU memory usage at the end
+        if torch.cuda.is_available():
+            print("\nFinal GPU Memory Usage:")
+            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.1f}MB")
+            print(f"Cached: {torch.cuda.memory_reserved() / 1024**2:.1f}MB")
         
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
