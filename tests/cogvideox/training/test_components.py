@@ -20,11 +20,36 @@ def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=N
     alpha_prod_t = alphas_cumprod[timesteps].view(-1, 1, 1, 1, 1)
     sigma_t = torch.sqrt(1 - alpha_prod_t)
     
+    # Adjust noise and noisy_frames to match model output spatial dimensions
+    if noise.shape != noise_pred.shape:
+        H_out, W_out = noise_pred.shape[3:]
+        noise = torch.nn.functional.interpolate(
+            noise.reshape(-1, *noise.shape[2:]), 
+            size=(H_out, W_out), 
+            mode='bilinear'
+        ).reshape(*noise.shape[:2], *noise_pred.shape[2:])
+    
+    if noisy_frames is not None and noisy_frames.shape != noise_pred.shape:
+        H_out, W_out = noise_pred.shape[3:]
+        noisy_frames = torch.nn.functional.interpolate(
+            noisy_frames.reshape(-1, *noisy_frames.shape[2:]), 
+            size=(H_out, W_out), 
+            mode='bilinear'
+        ).reshape(*noisy_frames.shape[:2], *noise_pred.shape[2:])
+    
     # Compute target
     v_target = noise * alpha_prod_t.sqrt() - sigma_t * noisy_frames if noisy_frames is not None else noise
     
     # Apply mask if provided
     if mask is not None:
+        # Adjust mask to match model output spatial dimensions
+        if mask.shape != noise_pred.shape:
+            H_out, W_out = noise_pred.shape[3:]
+            mask = torch.nn.functional.interpolate(
+                mask.reshape(-1, *mask.shape[2:]), 
+                size=(H_out, W_out), 
+                mode='nearest'
+            ).reshape(*mask.shape[:2], *noise_pred.shape[2:])
         masked_pred = noise_pred * mask
         masked_target = v_target * mask
         return F.mse_loss(masked_pred, masked_target)
