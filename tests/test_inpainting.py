@@ -379,13 +379,11 @@ def test_model_modification():
     from diffusers import CogVideoXTransformer3DModel
     import torch.nn as nn
     
-    # Create a small test model
-    model = CogVideoXTransformer3DModel(
-        in_channels=3,
-        out_channels=3,
-        num_layers=1,
-        num_attention_heads=1,
-        hidden_size=768,  # Use hidden_size instead of cross_attention_dim
+    # Create model from pretrained weights
+    model = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-2b",
+        subfolder="transformer",
+        revision=None,
     )
     
     # Enable memory optimizations
@@ -425,7 +423,7 @@ def test_model_modification():
     # Test forward pass with chunked input
     batch_size, chunk_size = 1, 32
     test_input = torch.randn(batch_size, chunk_size, 4, 64, 64)  # 4 channels (RGB + mask)
-    encoder_hidden_states = torch.randn(batch_size, chunk_size, 768)  # Match hidden_size
+    encoder_hidden_states = torch.randn(batch_size, chunk_size, model.config.hidden_size)  # Match model's hidden_size
     timestep = torch.zeros(batch_size, dtype=torch.long)
     
     with torch.amp.autocast('cuda', enabled=True):  # Test with mixed precision

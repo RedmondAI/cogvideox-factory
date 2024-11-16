@@ -170,6 +170,45 @@ def compute_metrics(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor) ->
     
     return metrics
 
+def compute_loss(model_pred: torch.Tensor, noise: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Compute the loss for video inpainting training.
+    
+    Args:
+        model_pred: Model prediction tensor [B, T, C, H, W]
+        noise: Target noise tensor [B, T, C, H, W]
+        mask: Binary mask tensor [B, T, 1, H, W]
+    
+    Returns:
+        Loss value as a scalar tensor
+    """
+    # Compute MSE loss only in masked regions
+    masked_pred = model_pred * mask
+    masked_noise = noise * mask
+    
+    # Compute MSE loss
+    mse_loss = F.mse_loss(masked_pred, masked_noise, reduction='none')
+    
+    # Average over all dimensions except batch
+    mse_loss = mse_loss.mean(dim=[1, 2, 3, 4])
+    
+    # Add temporal consistency loss
+    if model_pred.shape[1] > 1:  # Only if we have more than 1 frame
+        temp_loss = F.mse_loss(
+            (model_pred[:, 1:] - model_pred[:, :-1]) * mask[:, 1:],
+            (noise[:, 1:] - noise[:, :-1]) * mask[:, 1:],
+            reduction='none'
+        ).mean(dim=[1, 2, 3, 4])
+        
+        # Combine losses with weighting
+        loss = mse_loss + 0.1 * temp_loss  # Temporal consistency weight of 0.1
+    else:
+        loss = mse_loss
+    
+    # Final reduction
+    loss = loss.mean()
+    
+    return loss
+
 class CogVideoXInpaintingPipeline:
     def __init__(
         self,
