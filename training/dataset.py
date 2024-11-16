@@ -368,30 +368,36 @@ class VideoDatasetWithResizeAndRectangleCrop(VideoDataset):
 class VideoInpaintingDataset(Dataset):
     def __init__(
         self,
-        video_dir: str,
-        mask_dir: str,
+        data_root: str,
+        video_dir: str = "RGB_720",
+        mask_dir: str = "MASK_720",
+        gt_dir: str = "GT_720",
         num_frames: int = 100,  # Original sequence length
         frame_stride: int = 2,
-        image_size: Tuple[int, int] = (720, 1280),  # Original resolution
+        image_size: int = 720,
         center_crop: bool = True,
         normalize: bool = True,
     ):
         """Dataset for video inpainting training.
         
         Args:
-            video_dir: Directory containing video frames
-            mask_dir: Directory containing mask frames
-            num_frames: Number of input frames
+            data_root: Root directory containing sequence folders
+            video_dir: Name of subdirectory containing input frames (RGB)
+            mask_dir: Name of subdirectory containing mask frames
+            gt_dir: Name of subdirectory containing ground truth frames
+            num_frames: Number of frames per sequence
             frame_stride: Stride between sampled frames
-            image_size: Target video dimensions (H, W)
+            image_size: Target video height/width
             center_crop: Whether to center crop images
             normalize: Whether to normalize images to [-1, 1]
         """
-        self.video_dir = Path(video_dir)
-        self.mask_dir = Path(mask_dir)
+        self.data_root = Path(data_root)
+        self.video_dir = video_dir
+        self.mask_dir = mask_dir
+        self.gt_dir = gt_dir
         self.num_frames = num_frames
         self.frame_stride = frame_stride
-        self.image_size = image_size
+        self.image_size = (image_size, image_size)
         self.center_crop = center_crop
         self.normalize = normalize
         
@@ -401,41 +407,39 @@ class VideoInpaintingDataset(Dataset):
         self.model_frames = 49  # Native model frames
         
         # Calculate scaling factors
-        self.spatial_scale = (image_size[0] / self.model_height, image_size[1] / self.model_width)
+        self.spatial_scale = (image_size / self.model_height, image_size / self.model_width)
         self.temporal_scale = num_frames / self.model_frames
         
-        # Get video sequences
-        self.video_sequences = sorted([d for d in self.video_dir.iterdir() if d.is_dir()])
+        # Get video sequences (folders containing frame sequences)
+        self.video_sequences = sorted([d for d in self.data_root.iterdir() if d.is_dir()])
         
-        # Validate mask directory
-        if not self.mask_dir.exists():
-            raise ValueError(f"Mask directory {self.mask_dir} does not exist")
-            
         # Calculate effective sequence length
         self.effective_length = self.num_frames * self.frame_stride
         
-        # Create transforms
+        # Create transforms for RGB and GT frames
         transforms_list = [
-            transforms.Resize(image_size, antialias=True),
+            transforms.Resize(self.image_size, antialias=True),
         ]
         if center_crop:
-            transforms_list.append(transforms.CenterCrop(image_size))
+            transforms_list.append(transforms.CenterCrop(self.image_size))
         if normalize:
             transforms_list.append(transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]))
         self.transform = transforms.Compose(transforms_list)
         
         # Create mask transforms (no normalization)
         mask_transforms = [
-            transforms.Resize(image_size, antialias=True),
+            transforms.Resize(self.image_size, antialias=True),
         ]
         if center_crop:
-            mask_transforms.append(transforms.CenterCrop(image_size))
+            mask_transforms.append(transforms.CenterCrop(self.image_size))
         self.mask_transform = transforms.Compose(mask_transforms)
         
-        # Log scaling information
+        # Log dataset information
         logger.info(f"Dataset initialized with:")
-        logger.info(f"  Input resolution: {image_size}")
-        logger.info(f"  Input frames: {num_frames}")
+        logger.info(f"  Data root: {data_root}")
+        logger.info(f"  Number of sequences: {len(self.video_sequences)}")
+        logger.info(f"  Frames per sequence: {num_frames}")
+        logger.info(f"  Image size: {self.image_size}")
         logger.info(f"  Spatial scaling: {self.spatial_scale}")
         logger.info(f"  Temporal scaling: {self.temporal_scale}")
         
@@ -443,31 +447,42 @@ class VideoInpaintingDataset(Dataset):
         self._validate_sequences()
     
     def _validate_sequences(self):
-        """Validate that all sequences have enough frames."""
-        valid_sequences = []
-        for seq in self.video_sequences:
-            frames = sorted(seq.glob("*.jpg"))
-            if len(frames) >= self.effective_length:
-                valid_sequences.append(seq)
-        self.video_sequences = valid_sequences
-        
-        if not self.video_sequences:
-            raise ValueError("No valid sequences found")
+        """Validate that all sequences have the required structure and files."""
+        for seq_dir in self.video_sequences:
+            # Check required directories exist
+            rgb_dir = seq_dir / self.video_dir
+            mask_dir = seq_dir / self.mask_dir
+            gt_dir = seq_dir / self.gt_dir
+            
+            if not all(d.exists() and d.is_dir() for d in [rgb_dir, mask_dir, gt_dir]):
+                raise ValueError(f"Sequence {seq_dir} missing required directories")
+            
+            # Check frame files exist
+            for frame_idx in range(1, self.num_frames + 1):
+                frame_name = f"frame_{frame_idx:05d}.png"
+                if not all(
+                    (d / frame_name).exists() 
+                    for d in [rgb_dir, mask_dir, gt_dir]
+                ):
+                    raise ValueError(f"Missing frame {frame_name} in sequence {seq_dir}")
     
     def __len__(self):
+        """Return number of sequences in dataset."""
         return len(self.video_sequences)
     
     def _load_frame(self, path: Path) -> torch.Tensor:
-        """Load and preprocess a single frame."""
+        """Load and preprocess a single RGB frame."""
         img = Image.open(path).convert("RGB")
-        img = transforms.ToTensor()(img)
-        return self.transform(img)
+        img = TT.ToTensor()(img)
+        img = self.transform(img)
+        return img
     
     def _load_mask(self, path: Path) -> torch.Tensor:
         """Load and preprocess a single mask frame."""
-        mask = Image.open(path).convert("L")
-        mask = transforms.ToTensor()(mask)
-        return self.mask_transform(mask)
+        mask = Image.open(path).convert("L")  # Load as grayscale
+        mask = TT.ToTensor()(mask)
+        mask = self.mask_transform(mask)
+        return mask
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get a video sequence and corresponding masks.
@@ -478,37 +493,43 @@ class VideoInpaintingDataset(Dataset):
                 - mask: Binary masks [1, T, H, W]
                 - gt: Ground truth frames [C, T, H, W]
         """
-        seq_dir = self.video_sequences[idx]
-        frames = sorted(seq_dir.glob("*.jpg"))
+        # Get sequence folder
+        sequence_folder = self.video_sequences[idx]
         
-        # Random starting point
-        max_start = len(frames) - self.effective_length
-        start_idx = random.randint(0, max_start)
+        # Get paths for RGB, mask, and GT
+        rgb_dir = sequence_folder / self.video_dir
+        mask_dir = sequence_folder / self.mask_dir
+        gt_dir = sequence_folder / self.gt_dir
         
         # Load frames
-        frame_indices = range(start_idx, start_idx + self.effective_length, self.frame_stride)
-        rgb_frames = torch.stack([self._load_frame(frames[i]) for i in frame_indices])
+        rgb_frames = []
+        mask_frames = []
+        gt_frames = []
         
-        # Load masks
-        mask_name = f"{seq_dir.name}_mask.png"
-        mask_path = self.mask_dir / mask_name
-        if not mask_path.exists():
-            raise ValueError(f"Mask {mask_path} not found")
-        mask = self._load_mask(mask_path)
+        for frame_idx in range(1, self.num_frames + 1):
+            frame_name = f"frame_{frame_idx:05d}.png"
+            
+            # Load RGB frame
+            rgb_frame = self._load_frame(rgb_dir / frame_name)
+            rgb_frames.append(rgb_frame)
+            
+            # Load mask frame
+            mask_frame = self._load_mask(mask_dir / frame_name)
+            mask_frames.append(mask_frame)
+            
+            # Load ground truth frame
+            gt_frame = self._load_frame(gt_dir / frame_name)
+            gt_frames.append(gt_frame)
         
-        # Expand mask temporally
-        mask = mask.unsqueeze(0).expand(self.num_frames, -1, -1, -1)
-        
-        # Prepare ground truth (unmasked frames)
-        gt_frames = rgb_frames.clone()
-        
-        # Prepare masked input
-        rgb_frames = rgb_frames * (1 - mask) + mask  # White masking
+        # Stack frames along temporal dimension
+        rgb_tensor = torch.stack(rgb_frames, dim=1)    # [C, T, H, W]
+        mask_tensor = torch.stack(mask_frames, dim=1)  # [1, T, H, W]
+        gt_tensor = torch.stack(gt_frames, dim=1)      # [C, T, H, W]
         
         return {
-            "rgb": rgb_frames.permute(1, 0, 2, 3),  # [C, T, H, W]
-            "mask": mask.permute(1, 0, 2, 3),  # [1, T, H, W]
-            "gt": gt_frames.permute(1, 0, 2, 3),  # [C, T, H, W]
+            "rgb": rgb_tensor,
+            "mask": mask_tensor,
+            "gt": gt_tensor
         }
 
 

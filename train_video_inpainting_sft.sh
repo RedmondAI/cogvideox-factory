@@ -3,7 +3,7 @@
 # Model configuration
 PRETRAINED_MODEL_NAME_OR_PATH="THUDM/CogVideoX-5b"
 OUTPUT_DIR="./cogvideox-inpainting"
-DATA_ROOT="./data/inpainting"
+DATA_ROOT="/var/lib/docker/dataset"  # Updated to correct dataset path
 
 # Training hyperparameters
 TRAIN_BATCH_SIZE=4  # Increased to match deepspeed config
@@ -14,6 +14,12 @@ LEARNING_RATE=1e-5
 LR_WARMUP_STEPS=1000
 CHECKPOINTING_STEPS=2000
 VALIDATION_STEPS=500
+
+# Dataset settings
+VIDEO_DIR="RGB_720"
+MASK_DIR="MASK_720"
+GT_DIR="GT_720"
+IMAGE_SIZE=720
 
 # Model settings
 MIXED_PRECISION="bf16"  # Using bfloat16 for better numerical stability
@@ -91,6 +97,10 @@ deepspeed --num_gpus=8 \
   --pretrained_model_name_or_path="$PRETRAINED_MODEL_NAME_OR_PATH" \
   --output_dir="$OUTPUT_DIR" \
   --data_root="$DATA_ROOT" \
+  --video_dir="$VIDEO_DIR" \
+  --mask_dir="$MASK_DIR" \
+  --gt_dir="$GT_DIR" \
+  --image_size=$IMAGE_SIZE \
   --train_batch_size=$TRAIN_BATCH_SIZE \
   --gradient_accumulation_steps=$GRADIENT_ACCUMULATION_STEPS \
   --max_num_frames=$MAX_NUM_FRAMES \
