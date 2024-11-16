@@ -244,5 +244,114 @@ def handle_vae_temporal_output(decoded: torch.Tensor, target_frames: int) -> tor
         align_corners=False
     )
 
-# Import pipeline class from main training script
-from .cogvideox_video_inpainting_sft import CogVideoXInpaintingPipeline
+class CogVideoXInpaintingPipeline:
+    """Pipeline for CogVideoX video inpainting."""
+    
+    def __init__(
+        self,
+        vae,
+        transformer,
+        scheduler,
+        text_encoder=None,
+        tokenizer=None,
+    ):
+        self.vae = vae
+        self.transformer = transformer
+        self.scheduler = scheduler
+        self.text_encoder = text_encoder
+        self.tokenizer = tokenizer
+        
+        # Set default device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.dtype = torch.float16
+        
+        # Move models to device
+        self.vae = self.vae.to(self.device, dtype=self.dtype)
+        self.transformer = self.transformer.to(self.device, dtype=self.dtype)
+        
+        # Configure scheduler
+        self.scheduler.config.prediction_type = "v_prediction"
+        self.scheduler.config.rescale_betas_zero_snr = True
+        self.scheduler.config.snr_shift_scale = 1.0
+        
+        # Get model dimensions
+        self.model_height = transformer.config.sample_height
+        self.model_width = transformer.config.sample_width
+        self.model_frames = transformer.config.sample_frames
+    
+    def validate_dimensions(self, video: torch.Tensor, mask: torch.Tensor):
+        """Validate input dimensions."""
+        if video.ndim != 5:
+            raise ValueError(f"Expected video to have 5 dimensions [B,C,T,H,W], got {video.ndim}")
+        if mask.ndim != 5:
+            raise ValueError(f"Expected mask to have 5 dimensions [B,1,T,H,W], got {mask.ndim}")
+        if video.shape[0] != mask.shape[0]:
+            raise ValueError(f"Batch size mismatch: video {video.shape[0]}, mask {mask.shape[0]}")
+        if video.shape[2:] != mask.shape[2:]:
+            raise ValueError(f"Spatial dimensions mismatch: video {video.shape[2:]}, mask {mask.shape[2:]}")
+    
+    def prepare_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        """Prepare mask for latent space."""
+        # Downsample mask to latent dimensions
+        latent_h = self.model_height // 8  # VAE has 8x spatial downsampling
+        latent_w = self.model_width // 8
+        latent_t = self.model_frames // self.transformer.config.temporal_compression_ratio
+        
+        return F.interpolate(
+            mask,
+            size=(latent_t, latent_h, latent_w),
+            mode='nearest'
+        )
+    
+    def prepare_latents(
+        self,
+        batch_size: int,
+        num_frames: int,
+        height: int,
+        width: int,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
+        """Prepare random latents."""
+        # Calculate latent dimensions
+        latent_height = height // 8
+        latent_width = width // 8
+        latent_frames = num_frames // self.transformer.config.temporal_compression_ratio
+        
+        shape = (
+            batch_size,
+            self.transformer.config.in_channels,
+            latent_frames,
+            latent_height,
+            latent_width,
+        )
+        
+        # Generate random latents
+        latents = torch.randn(
+            shape,
+            generator=generator,
+            device=self.device,
+            dtype=self.dtype
+        )
+        
+        # Scale latents by model's latent std
+        latents = latents * self.vae.config.scaling_factor
+        
+        return latents
+    
+    def check_boundary_continuity(
+        self,
+        video: torch.Tensor,
+        boundary: int,
+        window_size: int
+    ) -> tuple[float, float]:
+        """Check continuity at chunk boundary."""
+        # Extract regions around boundary
+        pre_region = video[..., boundary-window_size:boundary, :]
+        post_region = video[..., boundary:boundary+window_size, :]
+        
+        # Compute differences
+        diff = torch.abs(post_region - pre_region)
+        mean_diff = diff.mean().item()
+        max_diff = diff.max().item()
+        
+        return mean_diff, max_diff

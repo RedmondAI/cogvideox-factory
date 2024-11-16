@@ -7,7 +7,8 @@ from .components import (
     compute_loss,
     compute_loss_v_pred,
     compute_loss_v_pred_with_snr,
-    handle_vae_temporal_output
+    handle_vae_temporal_output,
+    CogVideoXInpaintingPipeline
 )
 
 # Keep existing imports
@@ -50,8 +51,6 @@ import torch.cuda
 from torch.cuda.amp import autocast, GradScaler
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
-from args import get_args
-from dataset import VideoInpaintingDataset, BucketSampler
 from utils import (
     get_gradient_norm,
     get_optimizer,
@@ -1159,6 +1158,15 @@ def main(args):
     accelerator.end_training()
 
 if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    
+    # Add project root to path
+    project_root = str(Path(__file__).parent.parent)
+    if project_root not in sys.path:
+        sys.path.append(project_root)
+    
+    from args import get_args
     args = get_args()
     args.window_size = getattr(args, 'window_size', 32)
     args.overlap = getattr(args, 'overlap', 8)
