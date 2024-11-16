@@ -385,7 +385,7 @@ def test_model_modification():
         out_channels=3,
         num_layers=1,
         num_attention_heads=1,
-        cross_attention_dim=768,  # Standard transformer hidden dimension
+        hidden_size=768,  # Use hidden_size instead of cross_attention_dim
     )
     
     # Enable memory optimizations
@@ -425,7 +425,7 @@ def test_model_modification():
     # Test forward pass with chunked input
     batch_size, chunk_size = 1, 32
     test_input = torch.randn(batch_size, chunk_size, 4, 64, 64)  # 4 channels (RGB + mask)
-    encoder_hidden_states = torch.randn(batch_size, chunk_size, 768)  # Match cross_attention_dim
+    encoder_hidden_states = torch.randn(batch_size, chunk_size, 768)  # Match hidden_size
     timestep = torch.zeros(batch_size, dtype=torch.long)
     
     with torch.amp.autocast('cuda', enabled=True):  # Test with mixed precision
@@ -470,7 +470,7 @@ def test_pipeline():
         out_channels=3,
         num_layers=1,
         num_attention_heads=1,
-        cross_attention_dim=768,  # Standard transformer hidden dimension
+        hidden_size=768,  # Use hidden_size instead of cross_attention_dim
     )
     
     # Modify model for inpainting
@@ -511,7 +511,7 @@ def test_pipeline():
     with torch.no_grad():
         with torch.amp.autocast('cuda', enabled=True):
             # Create encoder hidden states
-            encoder_hidden_states = torch.randn(rgb.shape[0], rgb.shape[1], 768)  # Match cross_attention_dim
+            encoder_hidden_states = torch.randn(rgb.shape[0], rgb.shape[1], 768)  # Match hidden_size
             pipeline.transformer._encoder_hidden_states = encoder_hidden_states  # Set for pipeline use
             
             output = pipeline(
@@ -559,7 +559,7 @@ def test_error_handling():
         out_channels=3,
         num_layers=1,
         num_attention_heads=1,
-        cross_attention_dim=768,  # Standard transformer hidden dimension
+        hidden_size=768,  # Use hidden_size instead of cross_attention_dim
     )
     old_proj = model.patch_embed.proj
     new_proj = torch.nn.Conv2d(
@@ -593,7 +593,7 @@ def test_error_handling():
     with torch.no_grad():
         with torch.amp.autocast('cuda', enabled=True):
             # Create encoder hidden states
-            encoder_hidden_states = torch.randn(rgb.shape[0], rgb.shape[1], 768)  # Match cross_attention_dim
+            encoder_hidden_states = torch.randn(rgb.shape[0], rgb.shape[1], 768)  # Match hidden_size
             pipeline.transformer._encoder_hidden_states = encoder_hidden_states  # Set for pipeline use
             
             # Test with mismatched shapes
@@ -647,7 +647,7 @@ def test_edge_cases():
         out_channels=3,
         num_layers=1,
         num_attention_heads=1,
-        cross_attention_dim=768,  # Standard transformer hidden dimension
+        hidden_size=768,  # Use hidden_size instead of cross_attention_dim
     )
     old_proj = model.patch_embed.proj
     new_proj = torch.nn.Conv2d(
@@ -681,7 +681,7 @@ def test_edge_cases():
     with torch.no_grad():
         with torch.amp.autocast('cuda', enabled=True):
             # Create encoder hidden states
-            encoder_hidden_states = torch.randn(rgb.shape[0], rgb.shape[1], 768)  # Match cross_attention_dim
+            encoder_hidden_states = torch.randn(rgb.shape[0], rgb.shape[1], 768)  # Match hidden_size
             pipeline.transformer._encoder_hidden_states = encoder_hidden_states  # Set for pipeline use
             
             # Test with minimum sequence length
@@ -747,7 +747,7 @@ def test_training_step():
         out_channels=3,
         num_layers=1,
         num_attention_heads=1,
-        cross_attention_dim=768,  # Standard transformer hidden dimension
+        hidden_size=768,  # Use hidden_size instead of cross_attention_dim
     )
     old_proj = model.patch_embed.proj
     new_proj = torch.nn.Conv2d(
@@ -784,7 +784,7 @@ def test_training_step():
         encoder_hidden_states = torch.randn(
             rgb.shape[0],
             rgb.shape[1],
-            768,  # Match cross_attention_dim
+            768,  # Match hidden_size
         )
         model_output = model(
             sample=torch.cat([noisy_rgb, mask], dim=2),

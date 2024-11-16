@@ -566,28 +566,27 @@ def main(args):
                                 (chunk_rgb.shape[0],), device=chunk_rgb.device
                             )
                             
-                            # Model forward pass
-                            noisy_latents = pipeline.scheduler.add_noise(gt_latents, noise, timesteps)
-                            batch_size = noisy_latents.shape[0]
-                            timesteps = timesteps.expand(batch_size)
+                            # Get encoder hidden states
                             encoder_hidden_states = torch.randn(
-                                batch_size, 
+                                chunk_rgb.shape[0], 
                                 args.chunk_size, 
-                                768,  # Standard transformer hidden dimension
+                                transformer.config.hidden_size,  # Match hidden_size
                                 device=accelerator.device,
                             )
-                            noise_pred = transformer(
-                                sample=noisy_latents,
+                            
+                            # Forward through transformer
+                            model_pred = transformer(
+                                sample=torch.cat([gt_latents, mask], dim=2),
                                 encoder_hidden_states=encoder_hidden_states,
                                 timestep=timesteps,
                             )
                             
                             # Remove padding
-                            noise_pred = unpad(noise_pred, (rgb_pad[0]//8, rgb_pad[1]//8))
+                            model_pred = unpad(model_pred, (rgb_pad[0]//8, rgb_pad[1]//8))
                             noise = unpad(noise, (rgb_pad[0]//8, rgb_pad[1]//8))
                             
                             # Calculate loss
-                            loss = compute_loss(noise_pred, noise, mask)
+                            loss = compute_loss(model_pred, noise, mask)
                         
                         # Scale loss and backward pass
                         scaler.scale(loss).backward()
@@ -596,7 +595,7 @@ def main(args):
                         # Compute metrics
                         if step % args.validation_steps == 0:
                             with torch.no_grad():
-                                metrics = compute_metrics(noise_pred, noise, mask)
+                                metrics = compute_metrics(model_pred, noise, mask)
                                 for k, v in metrics.items():
                                     chunk_metrics[k].append(v)
                         
