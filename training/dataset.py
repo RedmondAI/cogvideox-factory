@@ -368,181 +368,148 @@ class VideoDatasetWithResizeAndRectangleCrop(VideoDataset):
 class VideoInpaintingDataset(Dataset):
     def __init__(
         self,
-        data_root: str,
-        split: str = 'train',
-        train_ratio: float = 0.8,
-        val_ratio: float = 0.1,
-        test_ratio: float = 0.1,
-        max_num_frames: int = 100,
-        height: int = 720,
-        width: int = 1280,
-        random_flip_h: float = 0.5,
-        random_flip_v: float = 0.5,
-        max_resolution: int = 2048,
-        window_size: int = 64,  # Default to larger window for A100s
-        overlap: int = 16,      # Default to larger overlap for better consistency
+        video_dir: str,
+        mask_dir: str,
+        num_frames: int = 100,  # Original sequence length
+        frame_stride: int = 2,
+        image_size: Tuple[int, int] = (720, 1280),  # Original resolution
+        center_crop: bool = True,
+        normalize: bool = True,
     ):
-        super().__init__()
-        self.data_root = Path(data_root)
-        self.split = split
-        self.max_num_frames = max_num_frames
-        self.height = height
-        self.width = width
-        self.random_flip_h = random_flip_h
-        self.random_flip_v = random_flip_v
-        self.max_resolution = max_resolution
-        self.window_size = window_size
-        self.overlap = overlap
+        """Dataset for video inpainting training.
         
-        # Safety checks
-        if max(height, width) > max_resolution:
-            raise ValueError(f"Resolution {height}x{width} exceeds maximum allowed {max_resolution}")
-        if window_size < overlap * 2:
-            raise ValueError(f"Window size {window_size} must be at least twice the overlap {overlap}")
-        if not (0 < train_ratio + val_ratio + test_ratio <= 1.0):
-            raise ValueError("Split ratios must sum to 1.0 or less")
+        Args:
+            video_dir: Directory containing video frames
+            mask_dir: Directory containing mask frames
+            num_frames: Number of input frames
+            frame_stride: Stride between sampled frames
+            image_size: Target video dimensions (H, W)
+            center_crop: Whether to center crop images
+            normalize: Whether to normalize images to [-1, 1]
+        """
+        self.video_dir = Path(video_dir)
+        self.mask_dir = Path(mask_dir)
+        self.num_frames = num_frames
+        self.frame_stride = frame_stride
+        self.image_size = image_size
+        self.center_crop = center_crop
+        self.normalize = normalize
         
-        # Find all sequence directories
-        all_sequences = []
-        for seq_dir in self.data_root.glob("sequence_*"):
-            if self._validate_sequence(seq_dir):
-                all_sequences.append(seq_dir)
+        # Calculate model's native dimensions
+        self.model_height = 60  # Native model height
+        self.model_width = 90   # Native model width
+        self.model_frames = 49  # Native model frames
         
-        if not all_sequences:
-            raise RuntimeError(f"No valid sequences found in {data_root}")
+        # Calculate scaling factors
+        self.spatial_scale = (image_size[0] / self.model_height, image_size[1] / self.model_width)
+        self.temporal_scale = num_frames / self.model_frames
         
-        # Sort for deterministic splitting
-        all_sequences.sort()
+        # Get video sequences
+        self.video_sequences = sorted([d for d in self.video_dir.iterdir() if d.is_dir()])
         
-        # Split sequences
-        n_total = len(all_sequences)
-        n_train = int(n_total * train_ratio)
-        n_val = int(n_total * val_ratio)
-        
-        if split == 'train':
-            self.sequence_dirs = all_sequences[:n_train]
-        elif split == 'val':
-            self.sequence_dirs = all_sequences[n_train:n_train+n_val]
-        elif split == 'test':
-            self.sequence_dirs = all_sequences[n_train+n_val:]
-        else:
-            raise ValueError(f"Invalid split: {split}")
-        
-        logger.info(f"Found {len(self.sequence_dirs)} sequences for {split} split")
-
-    def _validate_sequence(self, seq_dir: Path) -> bool:
-        """Validate sequence directory structure and frame counts."""
-        try:
-            # Check all required subdirectories exist
-            for subdir in [f"RGB_{self.height}", f"MASK_{self.height}", f"GT_{self.height}"]:
-                if not (seq_dir / subdir).is_dir():
-                    logger.warning(f"Missing directory {subdir} in {seq_dir}")
-                    return False
+        # Validate mask directory
+        if not self.mask_dir.exists():
+            raise ValueError(f"Mask directory {self.mask_dir} does not exist")
             
-            # Check frame counts match
-            frame_counts = []
-            for subdir in [f"RGB_{self.height}", f"MASK_{self.height}", f"GT_{self.height}"]:
-                count = len(list((seq_dir / subdir).glob("frame_*.png")))
-                frame_counts.append(count)
-            
-            if not all(c == frame_counts[0] for c in frame_counts):
-                logger.warning(f"Mismatched frame counts in {seq_dir}: {frame_counts}")
-                return False
-            
-            if frame_counts[0] < self.max_num_frames:
-                logger.warning(f"Insufficient frames in {seq_dir}: {frame_counts[0]} < {self.max_num_frames}")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error validating sequence {seq_dir}: {e}")
-            return False
+        # Calculate effective sequence length
+        self.effective_length = self.num_frames * self.frame_stride
+        
+        # Create transforms
+        transforms_list = [
+            transforms.Resize(image_size, antialias=True),
+        ]
+        if center_crop:
+            transforms_list.append(transforms.CenterCrop(image_size))
+        if normalize:
+            transforms_list.append(transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]))
+        self.transform = transforms.Compose(transforms_list)
+        
+        # Create mask transforms (no normalization)
+        mask_transforms = [
+            transforms.Resize(image_size, antialias=True),
+        ]
+        if center_crop:
+            mask_transforms.append(transforms.CenterCrop(image_size))
+        self.mask_transform = transforms.Compose(mask_transforms)
+        
+        # Log scaling information
+        logger.info(f"Dataset initialized with:")
+        logger.info(f"  Input resolution: {image_size}")
+        logger.info(f"  Input frames: {num_frames}")
+        logger.info(f"  Spatial scaling: {self.spatial_scale}")
+        logger.info(f"  Temporal scaling: {self.temporal_scale}")
+        
+        # Validate sequences
+        self._validate_sequences()
     
-    def _load_image_sequence(self, seq_dir: Path, subdir: str) -> torch.Tensor:
-        """Load image sequence with memory-efficient processing."""
-        img_dir = seq_dir / subdir
-        frames = []
+    def _validate_sequences(self):
+        """Validate that all sequences have enough frames."""
+        valid_sequences = []
+        for seq in self.video_sequences:
+            frames = sorted(seq.glob("*.jpg"))
+            if len(frames) >= self.effective_length:
+                valid_sequences.append(seq)
+        self.video_sequences = valid_sequences
         
-        try:
-            for img_path in sorted(img_dir.glob("frame_*.png"))[:self.max_num_frames]:
-                # Load and process one frame at a time
-                with Image.open(img_path) as img:
-                    img = img.convert("RGB")
-                    frame = TT.ToTensor()(img)
-                    
-                    # Verify frame dimensions
-                    if frame.shape[-2:] != (self.height, self.width):
-                        frame = TT.functional.interpolate(
-                            frame.unsqueeze(0),
-                            size=(self.height, self.width),
-                            mode='bilinear',
-                            align_corners=False
-                        ).squeeze(0)
-                    
-                    frames.append(frame)
-                
-                # Clear CUDA cache after processing each frame
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-        
-        except Exception as e:
-            logger.error(f"Error loading sequence from {img_dir}: {e}")
-            raise
-        
-        # Stack frames efficiently
-        sequence = torch.stack(frames)
-        return sequence
+        if not self.video_sequences:
+            raise ValueError("No valid sequences found")
     
-    def __getitem__(self, idx: int) -> dict:
-        """Get a sequence with error handling and memory management."""
-        try:
-            seq_dir = self.sequence_dirs[idx]
-            
-            # Load sequences with memory-efficient processing
-            rgb_seq = self._load_image_sequence(seq_dir, f"RGB_{self.height}")
-            mask_seq = self._load_image_sequence(seq_dir, f"MASK_{self.height}")
-            gt_seq = self._load_image_sequence(seq_dir, f"GT_{self.height}")
-            
-            # Convert mask to single channel
-            mask_seq = mask_seq.mean(dim=1, keepdim=True)
-            mask_seq = (mask_seq > 0.5).float()
-            
-            # Apply random flips consistently across sequence
-            if torch.rand(1) < self.random_flip_h:
-                rgb_seq = torch.flip(rgb_seq, [-1])
-                mask_seq = torch.flip(mask_seq, [-1])
-                gt_seq = torch.flip(gt_seq, [-1])
-            
-            if torch.rand(1) < self.random_flip_v:
-                rgb_seq = torch.flip(rgb_seq, [-2])
-                mask_seq = torch.flip(mask_seq, [-2])
-                gt_seq = torch.flip(gt_seq, [-2])
-            
-            # Move tensors to CPU to avoid GPU memory accumulation
-            result = {
-                "rgb": rgb_seq.cpu(),
-                "mask": mask_seq.cpu(),
-                "gt": gt_seq.cpu(),
-            }
-            
-            # Clear intermediate tensors
-            del rgb_seq, mask_seq, gt_seq
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error processing sequence {idx}: {e}")
-            # Return next valid sequence or raise if none found
-            next_idx = (idx + 1) % len(self)
-            if next_idx != idx:
-                return self.__getitem__(next_idx)
-            raise
+    def __len__(self):
+        return len(self.video_sequences)
     
-    def __len__(self) -> int:
-        return len(self.sequence_dirs)
+    def _load_frame(self, path: Path) -> torch.Tensor:
+        """Load and preprocess a single frame."""
+        img = Image.open(path).convert("RGB")
+        img = transforms.ToTensor()(img)
+        return self.transform(img)
+    
+    def _load_mask(self, path: Path) -> torch.Tensor:
+        """Load and preprocess a single mask frame."""
+        mask = Image.open(path).convert("L")
+        mask = transforms.ToTensor()(mask)
+        return self.mask_transform(mask)
+    
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Get a video sequence and corresponding masks.
+        
+        Returns:
+            Dict containing:
+                - rgb: Input frames [C, T, H, W]
+                - mask: Binary masks [1, T, H, W]
+                - gt: Ground truth frames [C, T, H, W]
+        """
+        seq_dir = self.video_sequences[idx]
+        frames = sorted(seq_dir.glob("*.jpg"))
+        
+        # Random starting point
+        max_start = len(frames) - self.effective_length
+        start_idx = random.randint(0, max_start)
+        
+        # Load frames
+        frame_indices = range(start_idx, start_idx + self.effective_length, self.frame_stride)
+        rgb_frames = torch.stack([self._load_frame(frames[i]) for i in frame_indices])
+        
+        # Load masks
+        mask_name = f"{seq_dir.name}_mask.png"
+        mask_path = self.mask_dir / mask_name
+        if not mask_path.exists():
+            raise ValueError(f"Mask {mask_path} not found")
+        mask = self._load_mask(mask_path)
+        
+        # Expand mask temporally
+        mask = mask.unsqueeze(0).expand(self.num_frames, -1, -1, -1)
+        
+        # Prepare ground truth (unmasked frames)
+        gt_frames = rgb_frames.clone()
+        
+        # Prepare masked input
+        rgb_frames = rgb_frames * (1 - mask) + mask  # White masking
+        
+        return {
+            "rgb": rgb_frames.permute(1, 0, 2, 3),  # [C, T, H, W]
+            "mask": mask.permute(1, 0, 2, 3),  # [1, T, H, W]
+            "gt": gt_frames.permute(1, 0, 2, 3),  # [C, T, H, W]
+        }
 
 
 class BucketSampler(Sampler):

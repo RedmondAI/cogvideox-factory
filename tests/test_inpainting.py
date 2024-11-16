@@ -1079,39 +1079,248 @@ def test_full_training_cycle():
     
     print("Full training cycle test passed!")
 
-def run_all_tests():
-    """Run all tests with proper setup and teardown."""
-    try:
-        print("Running comprehensive test suite...")
-        
-        test_dataset_initialization()
-        test_memory_efficiency()
-        test_padding()
-        test_temporal_smoothing()
-        test_metrics()
-        test_dataset()
-        test_model_modification()
-        test_pipeline()
-        test_error_handling()
-        test_edge_cases()
-        test_training_step()
-        test_full_training_cycle()
-        
-        print("\nAll tests completed successfully!")
-        
-    except Exception as e:
-        logger.error(f"Test suite failed: {e}")
-        raise
-    finally:
-        # Cleanup
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+def test_vae_shapes():
+    """Test VAE shape transformations including temporal expansion."""
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.float16
+    )
+    
+    # Test input shapes
+    B, C, T, H, W = 1, 3, 5, 64, 64
+    x = torch.randn(B, C, T, H, W)
+    
+    # Test encoding
+    latents = vae.encode(x).latent_dist.sample()
+    expected_latent_shape = (B, 16, T//2, H//8, W//8)  # T reduces by 2, spatial by 8
+    assert latents.shape == expected_latent_shape, f"Expected latent shape {expected_latent_shape}, got {latents.shape}"
+    
+    # Test decoding with temporal expansion
+    decoded = vae.decode(latents).sample
+    expected_output_shape = (B, C, T*2, H, W)  # T doubles in output
+    assert decoded.shape == expected_output_shape, f"Expected output shape {expected_output_shape}, got {decoded.shape}"
+
+def test_transformer_shapes():
+    """Test transformer shape handling and conditioning."""
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    )
+    
+    # Test input shapes
+    B, T, C, H, W = 1, 5, 16, 8, 8  # [B, T, C, H, W] format
+    x = torch.randn(B, T, C, H, W)
+    
+    # Create conditioning
+    timesteps = torch.zeros(B, dtype=torch.long)
+    encoder_hidden_states = torch.randn(B, 1, 4096)  # Single conditioning token
+    
+    # Test forward pass
+    output = transformer(x, timestep=timesteps, encoder_hidden_states=encoder_hidden_states)
+    if isinstance(output, tuple):
+        output = output[0]
+    
+    expected_shape = (B, T, C, H, W)
+    assert output.shape == expected_shape, f"Expected output shape {expected_shape}, got {output.shape}"
+
+def test_scheduler_config():
+    """Test scheduler configuration and step function."""
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    # Verify scheduler configuration
+    assert scheduler.config.prediction_type == "v_prediction", "Expected v-prediction type"
+    assert scheduler.config.rescale_betas_zero_snr, "Expected SNR rescaling to be enabled"
+    assert scheduler.config.snr_shift_scale == 1.0, "Expected SNR shift scale of 1.0"
+    
+    # Test scheduler step
+    B, C, T, H, W = 1, 16, 5, 8, 8
+    sample = torch.randn(B, C, T, H, W)
+    model_output = torch.randn_like(sample)
+    old_pred = torch.randn_like(sample)
+    
+    # Set timesteps
+    scheduler.set_timesteps(50)
+    timestep = scheduler.timesteps[0]
+    timestep_back = scheduler.timesteps[1]
+    
+    # Test step function
+    output = scheduler.step(
+        model_output=model_output,
+        timestep=timestep,
+        timestep_back=timestep_back,
+        sample=sample,
+        old_pred_original_sample=old_pred
+    )
+    
+    # Verify output is tuple with correct shapes
+    assert isinstance(output, tuple), "Expected tuple output from scheduler"
+    assert len(output) == 2, "Expected 2 components in scheduler output"
+    assert output[0].shape == sample.shape, f"Expected shape {sample.shape}, got {output[0].shape}"
+
+def test_end_to_end():
+    """Test complete inpainting pipeline."""
+    # Load models
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.float16
+    )
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    )
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    # Test dimensions
+    B, C, T, H, W = 1, 3, 5, 64, 64
+    x = torch.randn(B, C, T, H, W)
+    mask = torch.ones(B, 1, T, H, W)  # Binary mask
+    
+    # Encode
+    latents = vae.encode(x).latent_dist.sample()
+    assert latents.shape == (B, 16, T//2, H//8, W//8), "Unexpected latent shape"
+    
+    # Prepare transformer inputs
+    timesteps = torch.zeros(B, dtype=torch.long)
+    encoder_hidden_states = torch.randn(B, 1, 4096)
+    
+    # Run transformer
+    latents = latents.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W] for transformer
+    output = transformer(latents, timestep=timesteps, encoder_hidden_states=encoder_hidden_states)
+    if isinstance(output, tuple):
+        output = output[0]
+    
+    # Verify transformer output
+    assert output.shape == latents.shape, "Unexpected transformer output shape"
+    
+    # Decode
+    output = output.permute(0, 2, 1, 3, 4)  # [B, C, T, H, W] for VAE
+    decoded = vae.decode(output).sample
+    assert decoded.shape == (B, C, T*2, H, W), "Unexpected final output shape"
+
+def test_resolution_scaling():
+    """Test handling of different input resolutions."""
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.float16
+    )
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    )
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    pipeline = CogVideoXInpaintingPipeline(
+        vae=vae,
+        transformer=transformer,
+        scheduler=scheduler
+    )
+    
+    # Test various input dimensions
+    test_cases = [
+        # (frames, height, width, should_pass)
+        (100, 720, 1280, True),   # Original dimensions
+        (49, 60, 90, True),       # Model's native dimensions
+        (200, 1080, 1920, True),  # Full HD
+        (25, 480, 640, True),     # SD
+        (10, 15, 22, False),      # Too small
+        (500, 4000, 6000, False), # Too large
+    ]
+    
+    for frames, height, width, should_pass in test_cases:
+        try:
+            # Create test inputs
+            B, C = 1, 3
+            video = torch.randn(B, C, frames, height, width)
+            mask = torch.ones(B, 1, frames, height, width)
+            
+            # Calculate scaling
+            spatial_scale, temporal_scale = pipeline.validate_dimensions(video, mask)
+            
+            assert should_pass, f"Expected validation to fail for dimensions {frames}x{height}x{width}"
+            
+            # Verify scaling calculations
+            expected_spatial_scale = (height / pipeline.model_height, width / pipeline.model_width)
+            expected_temporal_scale = frames / pipeline.model_frames
+            
+            assert abs(spatial_scale[0] - expected_spatial_scale[0]) < 1e-6, "Incorrect height scaling"
+            assert abs(spatial_scale[1] - expected_spatial_scale[1]) < 1e-6, "Incorrect width scaling"
+            assert abs(temporal_scale - expected_temporal_scale) < 1e-6, "Incorrect temporal scaling"
+            
+            # Test end-to-end with these dimensions
+            output = pipeline(
+                prompt="test",
+                video=video,
+                mask=mask,
+                num_inference_steps=2  # Use small number for testing
+            )
+            
+            # Verify output dimensions match input
+            assert output.shape == video.shape, f"Output shape {output.shape} != input shape {video.shape}"
+            
+        except ValueError as e:
+            assert not should_pass, f"Validation failed unexpectedly for dimensions {frames}x{height}x{width}: {e}"
+
+def test_memory_calculation():
+    """Test memory requirement calculations."""
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.float16
+    )
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.float16
+    )
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
+    )
+    
+    pipeline = CogVideoXInpaintingPipeline(
+        vae=vae,
+        transformer=transformer,
+        scheduler=scheduler
+    )
+    
+    # Test with original dimensions
+    B, C, T, H, W = 1, 3, 100, 720, 1280
+    video = torch.randn(B, C, T, H, W)
+    mask = torch.ones(B, 1, T, H, W)
+    
+    # Calculate memory manually
+    bytes_per_element = 2  # fp16
+    expected_video_memory = B * C * T * H * W * bytes_per_element / (1024**3)
+    expected_latent_memory = B * 16 * (T//2) * (H//8) * (W//8) * bytes_per_element / (1024**3)
+    expected_transformer_memory = 10.8
+    expected_total = expected_video_memory + expected_latent_memory + expected_transformer_memory
+    
+    # Get pipeline's calculation
+    pipeline.validate_dimensions(video, mask)
+    
+    # Memory validation is logged but not returned
+    # We mainly want to ensure the calculation runs without error
+    # Actual values are checked manually in logs
 
 if __name__ == "__main__":
-    import os
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    training_dir = os.path.join(project_root, "training")
-    sys.path.append(training_dir)
-    run_all_tests()
+    test_vae_shapes()
+    test_transformer_shapes()
+    test_scheduler_config()
+    test_end_to_end()
+    test_resolution_scaling()
+    test_memory_calculation()

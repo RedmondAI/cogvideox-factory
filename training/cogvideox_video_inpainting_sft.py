@@ -10,7 +10,7 @@ import os
 import shutil
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional, Union, List
 from collections import defaultdict
 
 import diffusers
@@ -222,138 +222,275 @@ def compute_loss(model_pred: torch.Tensor, noise: torch.Tensor, mask: torch.Tens
 class CogVideoXInpaintingPipeline:
     def __init__(
         self,
-        vae,
-        transformer,
-        scheduler,
-        window_size: int = 32,
-        overlap: int = 8,
-        vae_precision: str = "fp16",
-        max_resolution: int = 2048,
+        vae: AutoencoderKLCogVideoX,
+        transformer: CogVideoXTransformer3DModel,
+        scheduler: CogVideoXDPMScheduler,
+        text_encoder=None,
+        tokenizer=None,
     ):
-        super().__init__()
         self.vae = vae
         self.transformer = transformer
         self.scheduler = scheduler
-        self.window_size = window_size
-        self.overlap = overlap
-        self.vae_precision = vae_precision
-        self.max_resolution = max_resolution
+        self.text_encoder = text_encoder
+        self.tokenizer = tokenizer
         
-        # Set model configurations
-        if hasattr(transformer, 'config'):
-            transformer.config.use_memory_efficient_attention = True
-            transformer.config.attention_mode = "xformers"
-            transformer.config.gradient_checkpointing_steps = 2
+        # Set default device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.dtype = torch.float16
         
-        # Set scheduler configurations
-        scheduler.config.prediction_type = "epsilon"
-        scheduler.config.num_train_timesteps = 1000
-        scheduler.config.beta_schedule = "scaled_linear"
+        # Move models to device
+        self.vae = self.vae.to(self.device, dtype=self.dtype)
+        self.transformer = self.transformer.to(self.device, dtype=self.dtype)
+        
+        # Configure scheduler
+        self.scheduler.config.prediction_type = "v_prediction"
+        self.scheduler.config.rescale_betas_zero_snr = True
+        self.scheduler.config.snr_shift_scale = 1.0
+        
+        # Get model dimensions
+        self.model_height = transformer.config.sample_height
+        self.model_width = transformer.config.sample_width
+        self.model_frames = transformer.config.sample_frames
     
-    def encode_frames(self, frames: torch.Tensor) -> torch.Tensor:
-        """Encode frames with specified precision."""
-        dtype = torch.float16 if self.vae_precision == "fp16" else torch.float32
-        with torch.cuda.amp.autocast(enabled=self.vae_precision == "fp16"):
-            latents = self.vae.encode(frames).latent_dist.sample()
-            latents = latents * self.vae.config.scaling_factor
-        return latents.to(dtype)
+    def _calculate_scaling(self, height: int, width: int, num_frames: int):
+        """Calculate scaling factors between input and model dimensions."""
+        spatial_scale = (height / self.model_height, width / self.model_width)
+        temporal_scale = num_frames / self.model_frames
+        
+        # Validate scaling ratios
+        min_scale = 0.25  # Don't allow scaling smaller than 1/4
+        max_scale = 32.0  # Don't allow scaling larger than 32x
+        
+        for scale_name, scale in [
+            ("height", spatial_scale[0]),
+            ("width", spatial_scale[1]),
+            ("temporal", temporal_scale)
+        ]:
+            if not (min_scale <= scale <= max_scale):
+                raise ValueError(
+                    f"Invalid {scale_name} scaling factor {scale:.2f}. "
+                    f"Must be between {min_scale} and {max_scale}. "
+                    f"Input dimensions too {'small' if scale < min_scale else 'large'}."
+                )
+        
+        # Log detailed scaling information
+        logger.info("Dimension scaling factors:")
+        logger.info(f"  Height: {spatial_scale[0]:.2f}x (Input: {height} → Model: {self.model_height})")
+        logger.info(f"  Width: {spatial_scale[1]:.2f}x (Input: {width} → Model: {self.model_width})")
+        logger.info(f"  Temporal: {temporal_scale:.2f}x (Input: {num_frames} → Model: {self.model_frames})")
+        
+        return spatial_scale, temporal_scale
     
-    def _process_window(
+    def validate_dimensions(self, video: torch.Tensor, mask: torch.Tensor):
+        """Validate input dimensions and scaling."""
+        if video.ndim != 5:
+            raise ValueError(f"Video must be 5D [B,C,T,H,W], got shape {video.shape}")
+        if mask.ndim != 5:
+            raise ValueError(f"Mask must be 5D [B,1,T,H,W], got shape {mask.shape}")
+        
+        B, C, T, H, W = video.shape
+        B_m, C_m, T_m, H_m, W_m = mask.shape
+        
+        # Check batch size
+        if B != B_m:
+            raise ValueError(f"Video batch size {B} != mask batch size {B_m}")
+        
+        # Check channels
+        if C != 3:
+            raise ValueError(f"Video must have 3 channels, got {C}")
+        if C_m != 1:
+            raise ValueError(f"Mask must have 1 channel, got {C_m}")
+        
+        # Check temporal dimension
+        if T != T_m:
+            raise ValueError(f"Video frames {T} != mask frames {T_m}")
+        
+        # Check spatial dimensions
+        if H != H_m or W != W_m:
+            raise ValueError(f"Video size ({H}x{W}) != mask size ({H_m}x{W_m})")
+        
+        # Calculate and validate scaling
+        spatial_scale, temporal_scale = self._calculate_scaling(H, W, T)
+        
+        # Log memory requirements
+        bytes_per_element = 2 if self.dtype == torch.float16 else 4
+        video_memory = B * C * T * H * W * bytes_per_element / (1024**3)  # GB
+        latent_memory = B * 16 * (T//2) * (H//8) * (W//8) * bytes_per_element / (1024**3)  # GB
+        transformer_memory = 10.8  # GB (from analysis)
+        total_memory = video_memory + latent_memory + transformer_memory
+        
+        logger.info("Memory requirements:")
+        logger.info(f"  Video: {video_memory:.2f}GB")
+        logger.info(f"  Latents: {latent_memory:.2f}GB")
+        logger.info(f"  Transformer: {transformer_memory:.2f}GB")
+        logger.info(f"  Total: {total_memory:.2f}GB")
+        
+        return spatial_scale, temporal_scale
+    
+    @torch.no_grad()
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        """Encode input video to latent space.
+        
+        Args:
+            x: Input tensor of shape [B, C, T, H, W]
+            
+        Returns:
+            Latent tensor of shape [B, C, T//2, H//8, W//8]
+        """
+        latents = self.vae.encode(x).latent_dist.sample()
+        latents = latents * self.vae.config.scaling_factor
+        return latents
+    
+    @torch.no_grad()
+    def decode(self, latents: torch.Tensor) -> torch.Tensor:
+        """Decode latents to video space with temporal expansion.
+        
+        Args:
+            latents: Latent tensor of shape [B, C, T, H, W]
+            
+        Returns:
+            Video tensor of shape [B, C, T*2, H*8, W*8]
+        """
+        latents = 1 / self.vae.config.scaling_factor * latents
+        video = self.vae.decode(latents).sample
+        return video
+    
+    def prepare_latents(
         self,
-        rgb_frames: torch.Tensor,
-        mask_frames: torch.Tensor,
-        timestep: torch.Tensor,
-        start_idx: int,
-    ) -> Tuple[torch.Tensor, Tuple[int, int]]:
-        """Process window with memory management."""
-        try:
-            # Handle edge case for last window
-            window_size = min(self.window_size, rgb_frames.shape[1] - start_idx)
-            if window_size < self.window_size:
-                pad_size = self.window_size - window_size
-                rgb_frames = F.pad(rgb_frames, (0, 0, 0, 0, 0, 0, 0, pad_size))
-                mask_frames = F.pad(mask_frames, (0, 0, 0, 0, 0, 0, 0, pad_size))
+        batch_size: int,
+        num_frames: int,
+        height: int,
+        width: int,
+        generator: Optional[torch.Generator] = None,
+    ) -> torch.Tensor:
+        """Prepare random latents accounting for temporal compression."""
+        latents_shape = (batch_size, self.transformer.config.in_channels, num_frames//2, height//8, width//8)
+        latents = torch.randn(latents_shape, generator=generator, device=self.device, dtype=self.dtype)
+        latents = latents * self.scheduler.init_noise_sigma
+        return latents
+    
+    def prepare_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        """Prepare mask for latent space.
+        
+        Args:
+            mask: Binary mask of shape [B, 1, T, H, W]
             
-            window_rgb = rgb_frames[:, start_idx:start_idx + self.window_size]
-            window_mask = mask_frames[:, start_idx:start_idx + self.window_size]
+        Returns:
+            Processed mask of shape [B, 1, T//2, H//8, W//8]
+        """
+        mask = F.interpolate(mask, size=(mask.shape[2]//2, mask.shape[3]//8, mask.shape[4]//8), mode='nearest')
+        return mask
+    
+    def prepare_encoder_hidden_states(
+        self,
+        prompt: Union[str, List[str]],
+        batch_size: int = 1,
+    ) -> torch.Tensor:
+        """Prepare text conditioning.
+        
+        Args:
+            prompt: Text prompt or list of prompts
+            batch_size: Batch size
             
-            # Pad resolution
-            window_rgb, rgb_pad = pad_to_multiple(window_rgb, max_dim=self.max_resolution)
-            window_mask, _ = pad_to_multiple(window_mask, max_dim=self.max_resolution)
+        Returns:
+            Conditioning tensor of shape [B, 1, 4096]
+        """
+        if self.text_encoder is None:
+            # Return random conditioning if no text encoder
+            return torch.randn(batch_size, 1, self.transformer.config.text_embed_dim, device=self.device, dtype=self.dtype)
             
-            # Process with appropriate precision
-            latents = self.encode_frames(window_rgb)  # Shape: [B, T, 4, H/8, W/8]
-            mask = F.interpolate(window_mask, size=latents.shape[-2:], mode='nearest')  # Shape: [B, T, 1, H/8, W/8]
+        if isinstance(prompt, str):
+            prompt = [prompt] * batch_size
             
-            # Model forward pass
-            latent_input = torch.cat([latents, mask], dim=2)  # Shape: [B, T, 5, H/8, W/8]
-            noise_pred = self.transformer(
-                sample=latent_input,
-                timestep=timestep,
-                return_dict=False,
-            )[0]
-            
-            torch.cuda.empty_cache()
-            return noise_pred, rgb_pad
-            
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                torch.cuda.empty_cache()
-                logger.error("OOM error in window processing, attempting recovery...")
-            raise
-        except Exception as e:
-            logger.error(f"Error processing window at index {start_idx}: {e}")
-            raise
-
+        text_inputs = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids.to(self.device)
+        
+        encoder_hidden_states = self.text_encoder(text_input_ids)[0]
+        # Take first token only
+        encoder_hidden_states = encoder_hidden_states[:, :1]
+        return encoder_hidden_states
+    
     @torch.no_grad()
     def __call__(
         self,
-        rgb_frames: torch.Tensor,
-        mask_frames: torch.Tensor,
+        prompt: Union[str, List[str]],
+        video: torch.Tensor,
+        mask: torch.Tensor,
         num_inference_steps: int = 50,
         generator: Optional[torch.Generator] = None,
-    ) -> torch.Tensor:
+        eta: float = 0.0,
+        **kwargs,
+    ):
+        """Run inpainting pipeline.
+        
+        Args:
+            prompt: Conditioning text
+            video: Input video [B, C, T, H, W]
+            mask: Binary mask [B, 1, T, H, W]
+            num_inference_steps: Number of denoising steps
+            generator: Random number generator
+            eta: Eta parameter for variance during sampling
+            
+        Returns:
+            Generated video completing the masked regions
+        """
+        batch_size = video.shape[0]
+        
+        # Validate inputs and calculate scaling
+        spatial_scale, temporal_scale = self.validate_dimensions(video, mask)
+        
+        # Set timesteps
         self.scheduler.set_timesteps(num_inference_steps)
-        device = self.transformer.device
+        timesteps = self.scheduler.timesteps
         
-        # Initialize output tensor
-        output_frames = torch.zeros_like(rgb_frames)
-        blend_weights = torch.zeros((1, rgb_frames.shape[1], 1, 1, 1), device=device)
+        # Prepare inputs
+        latents = self.encode(video)
+        mask = self.prepare_mask(mask)
+        encoder_hidden_states = self.prepare_encoder_hidden_states(prompt, batch_size)
         
-        try:
-            for t in self.scheduler.timesteps:
-                # Process each window
-                for start_idx in range(0, rgb_frames.shape[1] - self.window_size + 1, 
-                                     self.window_size - self.overlap):
-                    noise_pred, pad = self._process_window(rgb_frames, mask_frames, t, start_idx)
-                    
-                    # Create blending weights for this window
-                    window_weights = torch.ones((1, self.window_size, 1, 1, 1), device=device)
-                    if start_idx > 0:  # Blend start
-                        window_weights[:, :self.overlap] = torch.linspace(0, 1, self.overlap, device=device).view(1, -1, 1, 1, 1)
-                    if start_idx + self.window_size < rgb_frames.shape[1]:  # Blend end
-                        window_weights[:, -self.overlap:] = torch.linspace(1, 0, self.overlap, device=device).view(1, -1, 1, 1, 1)
-                    
-                    # Remove padding from prediction
-                    noise_pred = unpad(noise_pred, pad)
-                    
-                    # Accumulate predictions and weights
-                    output_frames[:, start_idx:start_idx + self.window_size] += noise_pred * window_weights
-                    blend_weights[:, start_idx:start_idx + self.window_size] += window_weights
-                    
-                    torch.cuda.empty_cache()  # Clear cache after each window
-                
-                # Apply temporal smoothing
-                output_frames = temporal_smooth(output_frames)
+        # Initialize noise
+        noise = torch.randn_like(latents)
+        noisy_latents = self.scheduler.add_noise(latents, noise, timesteps[0])
+        
+        # Prepare for transformer
+        latent_model_input = noisy_latents.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
+        
+        # Denoise
+        for i, t in enumerate(timesteps[:-1]):
+            t_back = timesteps[i + 1]
             
-            # Normalize by blend weights
-            output_frames = output_frames / (blend_weights + 1e-8)
+            # Predict noise
+            noise_pred = self.transformer(
+                latent_model_input,
+                timestep=t,
+                encoder_hidden_states=encoder_hidden_states,
+            )[0]
             
-            return output_frames
+            # Scheduler step
+            latent_output = self.scheduler.step(
+                model_output=noise_pred,
+                timestep=t,
+                timestep_back=t_back,
+                sample=latent_model_input,
+                old_pred_original_sample=latents.permute(0, 2, 1, 3, 4),
+            )[0]
             
-        except Exception as e:
-            logger.error(f"Error in pipeline inference: {e}")
-            raise
+            # Apply mask
+            latent_model_input = (
+                latent_output * mask + latent_model_input * (1 - mask)
+            )
+        
+        # Final decoding
+        latent_model_input = latent_model_input.permute(0, 2, 1, 3, 4)  # [B, C, T, H, W]
+        video = self.decode(latent_model_input)
+        
+        return video
 
 def collate_fn(examples):
     rgb = torch.stack([example["rgb"] for example in examples])
@@ -387,8 +524,9 @@ def log_validation(
     
     # Generate video
     videos = pipeline(
-        rgb_frames=rgb,
-        mask_frames=mask,
+        prompt="",
+        video=rgb,
+        mask=mask,
         num_inference_steps=args.num_inference_steps,
     )
     
@@ -539,6 +677,114 @@ def train_loop(
         save_path = os.path.join(config.output_dir, "final_model")
         accelerator.save_state(save_path)
 
+def get_default_config():
+    """Get default training configuration."""
+    return {
+        # Model configuration
+        "model_height": 60,     # Native model height
+        "model_width": 90,      # Native model width
+        "model_frames": 49,     # Native model frame count
+        "in_channels": 16,
+        "out_channels": 16,
+        "attention_heads": 48,
+        "attention_head_dim": 64,
+        "num_layers": 42,
+        "patch_size": 2,
+        "text_embed_dim": 4096,
+        "time_embed_dim": 512,
+        "temporal_compression": 4,
+        
+        # Input configuration
+        "input_height": 720,    # Input video height
+        "input_width": 1280,    # Input video width
+        "input_frames": 100,    # Input frame count
+        
+        # Training configuration
+        "learning_rate": 1e-4,
+        "adam_beta1": 0.9,
+        "adam_beta2": 0.999,
+        "adam_weight_decay": 1e-2,
+        "adam_epsilon": 1e-8,
+        "max_grad_norm": 1.0,
+        
+        # Scheduler configuration
+        "num_train_timesteps": 1000,
+        "beta_start": 0.00085,
+        "beta_end": 0.012,
+        "beta_schedule": "scaled_linear",
+        "prediction_type": "v_prediction",
+        "set_alpha_to_one": True,
+        "steps_offset": 0,
+        "rescale_betas_zero_snr": True,
+        "snr_shift_scale": 1.0,
+        "timestep_spacing": "trailing",
+        
+        # Memory optimization
+        "gradient_checkpointing": True,
+        "use_8bit_adam": True,
+        "enable_xformers_memory_efficient_attention": True,
+        
+        # Mixed precision
+        "mixed_precision": "fp16",
+        "dtype": torch.float16,
+        
+        # Dataset configuration
+        "train_batch_size": 1,  # Due to high memory usage (10.8GB per sample)
+        "eval_batch_size": 1,
+        "dataloader_num_workers": 4,
+        "num_inference_steps": 50,
+    }
+
+def create_pipeline(args):
+    """Create and configure the inpainting pipeline."""
+    config = get_default_config()
+    config.update(vars(args))
+    
+    # Load models
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="vae",
+        torch_dtype=config["dtype"]
+    )
+    
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="transformer",
+        torch_dtype=config["dtype"]
+    )
+    
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="scheduler",
+    )
+    
+    # Update scheduler config
+    scheduler.config.prediction_type = config["prediction_type"]
+    scheduler.config.beta_schedule = config["beta_schedule"]
+    scheduler.config.beta_start = config["beta_start"]
+    scheduler.config.beta_end = config["beta_end"]
+    scheduler.config.set_alpha_to_one = config["set_alpha_to_one"]
+    scheduler.config.steps_offset = config["steps_offset"]
+    scheduler.config.rescale_betas_zero_snr = config["rescale_betas_zero_snr"]
+    scheduler.config.snr_shift_scale = config["snr_shift_scale"]
+    scheduler.config.timestep_spacing = config["timestep_spacing"]
+    
+    # Create pipeline
+    pipeline = CogVideoXInpaintingPipeline(
+        vae=vae,
+        transformer=transformer,
+        scheduler=scheduler,
+    )
+    
+    # Enable memory optimizations
+    if config["gradient_checkpointing"]:
+        transformer.enable_gradient_checkpointing()
+    
+    if config["enable_xformers_memory_efficient_attention"]:
+        transformer.enable_xformers_memory_efficient_attention()
+    
+    return pipeline, config
+
 def main(args):
     logging_dir = os.path.join(args.output_dir, args.logging_dir)
     accelerator_project_config = ProjectConfiguration(
@@ -561,100 +807,7 @@ def main(args):
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
     
-    # Load models
-    vae = AutoencoderKLCogVideoX.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="vae",
-        revision=args.revision,
-        torch_dtype=torch.bfloat16,  # Match model precision
-    )
-    vae_latent_channels = vae.config.latent_channels
-    logger.info(f"VAE latent channels: {vae_latent_channels}")
-    if vae_latent_channels != 16:
-        raise ValueError(f"Expected 16 latent channels for CogVideoX-5b VAE, got {vae_latent_channels}")
-    
-    transformer = CogVideoXTransformer3DModel.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="transformer",
-        revision=args.revision,
-        torch_dtype=torch.bfloat16,  # Match model precision
-    )
-    
-    # Modify transformer input channels to accept mask
-    old_proj = transformer.patch_embed.proj
-    original_in_channels = old_proj.weight.size(1)
-    if original_in_channels != vae_latent_channels:
-        logger.warning(
-            f"Transformer input channels ({original_in_channels}) don't match VAE latent channels ({vae_latent_channels}). "
-            "This may cause issues with the model."
-        )
-    
-    new_proj = torch.nn.Conv2d(
-        vae_latent_channels + 1,  # Add mask channel to latent channels
-        old_proj.out_channels,
-        kernel_size=old_proj.kernel_size,
-        stride=old_proj.stride,
-        padding=old_proj.padding,
-    ).to(dtype=torch.bfloat16)
-    
-    # Initialize new weights
-    with torch.no_grad():
-        # Copy latent channel weights
-        new_proj.weight[:, :vae_latent_channels] = old_proj.weight[:, :vae_latent_channels]
-        # Initialize new mask channel to 0
-        new_proj.weight[:, vae_latent_channels:] = 0
-        new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
-    
-    transformer.patch_embed.proj = new_proj
-    
-    # Freeze VAE
-    vae.requires_grad_(False)
-    
-    # Create pipeline
-    pipeline = CogVideoXInpaintingPipeline(
-        vae=vae,
-        transformer=transformer,
-        scheduler=CogVideoXDPMScheduler.from_pretrained(
-            args.pretrained_model_name_or_path,
-            subfolder="scheduler",
-        ),
-        window_size=args.window_size,
-        overlap=args.overlap,
-        vae_precision=args.vae_precision,
-        max_resolution=args.max_resolution,
-    )
-    
-    # Configure scheduler for better inpainting
-    pipeline.scheduler.config.prediction_type = "v_prediction"  # Better for inpainting
-    pipeline.scheduler.config.num_train_timesteps = 1000
-    pipeline.scheduler.config.beta_schedule = "scaled_linear"
-    pipeline.scheduler.config.steps_offset = 1
-    pipeline.scheduler.config.clip_sample = False
-    
-    # Enable memory optimizations
-    if args.enable_xformers_memory_efficient_attention:
-        if is_xformers_available():
-            transformer.enable_xformers_memory_efficient_attention()
-        else:
-            logger.warning("xformers not available, falling back to standard attention")
-    
-    if args.gradient_checkpointing:
-        transformer.gradient_checkpointing_enable()
-        logger.info("Gradient checkpointing enabled")
-    
-    # Enable CPU offloading if specified
-    if args.use_cpu_offload and accelerator.is_main_process:
-        pipeline.enable_model_cpu_offload()
-        logger.info("Model CPU offloading enabled")
-    
-    # Enable slicing and tiling for memory efficiency
-    if args.enable_slicing:
-        pipeline.vae.enable_slicing()
-        logger.info("VAE slicing enabled")
-    
-    if args.enable_tiling:
-        pipeline.vae.enable_tiling()
-        logger.info("VAE tiling enabled")
+    pipeline, config = create_pipeline(args)
     
     # Dataset and DataLoaders creation
     train_dataset = VideoInpaintingDataset(
@@ -699,7 +852,7 @@ def main(args):
     if args.use_8bit_adam:
         import bitsandbytes as bnb
         optimizer = bnb.optim.AdamW8bit(
-            transformer.parameters(),
+            pipeline.transformer.parameters(),
             lr=args.learning_rate,
             betas=(args.adam_beta1, args.adam_beta2),
             weight_decay=args.adam_weight_decay,
@@ -707,7 +860,7 @@ def main(args):
         )
     else:
         optimizer = torch.optim.AdamW(
-            transformer.parameters(),
+            pipeline.transformer.parameters(),
             lr=args.learning_rate,
             betas=(args.adam_beta1, args.adam_beta2),
             weight_decay=args.adam_weight_decay,
@@ -723,8 +876,8 @@ def main(args):
     )
     
     # Prepare everything with accelerator
-    transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        transformer, optimizer, train_dataloader, lr_scheduler
+    pipeline.transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        pipeline.transformer, optimizer, train_dataloader, lr_scheduler
     )
     
     # Initialize gradient scaler for mixed precision
@@ -751,12 +904,12 @@ def main(args):
     )
     
     for epoch in range(first_epoch, args.num_train_epochs):
-        transformer.train()
+        pipeline.transformer.train()
         epoch_metrics = defaultdict(float)
         
         for step, batch in enumerate(train_dataloader):
             try:
-                with accelerator.accumulate(transformer):
+                with accelerator.accumulate(pipeline.transformer):
                     total_frames = batch["rgb"].shape[1]
                     chunk_losses = []
                     chunk_metrics = defaultdict(list)
@@ -775,8 +928,8 @@ def main(args):
                             chunk_gt, _ = pad_to_multiple(chunk_gt, max_dim=args.max_resolution)
                             
                             # Process with VAE
-                            rgb_latents = pipeline.encode_frames(chunk_rgb)
-                            gt_latents = pipeline.encode_frames(chunk_gt)
+                            rgb_latents = pipeline.encode(chunk_rgb)
+                            gt_latents = pipeline.encode(chunk_gt)
                             
                             # Prepare mask and noise
                             mask = F.interpolate(chunk_mask, size=rgb_latents.shape[-2:])
@@ -790,12 +943,12 @@ def main(args):
                             encoder_hidden_states = torch.randn(
                                 chunk_rgb.shape[0], 
                                 args.chunk_size, 
-                                transformer.config.hidden_size,  # Match hidden_size
+                                pipeline.transformer.config.hidden_size,  # Match hidden_size
                                 device=accelerator.device,
                             )
                             
                             # Forward through transformer
-                            model_pred = transformer(
+                            model_pred = pipeline.transformer(
                                 sample=torch.cat([gt_latents, mask], dim=2),
                                 encoder_hidden_states=encoder_hidden_states,
                                 timestep=timesteps,
@@ -824,7 +977,7 @@ def main(args):
                     # Average losses and update
                     if accelerator.sync_gradients:
                         scaler.unscale_(optimizer)
-                        accelerator.clip_grad_norm_(transformer.parameters(), args.max_grad_norm)
+                        accelerator.clip_grad_norm_(pipeline.transformer.parameters(), args.max_grad_norm)
                     
                     scaler.step(optimizer)
                     scaler.update()
@@ -845,7 +998,7 @@ def main(args):
                     for k, v in epoch_metrics.items():
                         wandb.log({f"train/{k}": v / step}, step=global_step)
                     
-                    pipeline.transformer = accelerator.unwrap_model(transformer)
+                    pipeline.transformer = accelerator.unwrap_model(pipeline.transformer)
                     log_validation(
                         accelerator=accelerator,
                         pipeline=pipeline,
