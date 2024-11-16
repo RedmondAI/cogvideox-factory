@@ -1,4 +1,12 @@
-"""Main test runner for CogVideoX inpainting tests."""
+"""Run all inpainting tests."""
+
+import sys
+from pathlib import Path
+
+# Add project root to path
+project_root = str(Path(__file__).parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
 import pytest
 from .features.test_conditioning import (
@@ -15,12 +23,16 @@ from .training.test_components import (
     test_vae_temporal_handling,
     test_pipeline_components
 )
-from .test_shapes import (
+from .architecture.test_model_shapes import (
     test_vae_shapes,
     test_transformer_shapes,
-    test_scheduler_config,
+    test_scheduler_config
+)
+from .resolution.test_scaling import (
     test_resolution_scaling,
-    test_padding_edge_cases,
+    test_padding_edge_cases
+)
+from .memory.test_performance import (
     test_memory_calculation,
     test_metrics_cpu_fallback
 )

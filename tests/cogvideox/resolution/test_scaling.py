@@ -7,6 +7,25 @@ from diffusers import (
     AutoencoderKLCogVideoX,
     CogVideoXDPMScheduler
 )
+import sys
+from pathlib import Path
+
+# Add project root to path
+project_root = str(Path(__file__).parent.parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+from training.components import (
+    pad_to_multiple,
+    unpad,
+    temporal_smooth,
+    compute_metrics,
+    compute_loss,
+    compute_loss_v_pred,
+    compute_loss_v_pred_with_snr,
+    CogVideoXInpaintingPipeline,
+    handle_vae_temporal_output
+)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
