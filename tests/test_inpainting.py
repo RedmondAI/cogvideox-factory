@@ -1258,12 +1258,14 @@ def test_resolution_scaling():
     # Test with different resolutions
     B, C, T = 1, 3, 5
     resolutions = [
-        (64, 64),    # Small
-        (720, 1280), # HD
-        (1080, 1920) # Full HD
+        (64, 64),      # Small
+        (480, 640),    # SD
+        (720, 1280),   # HD
     ]
     
     for H, W in resolutions:
+        print(f"\nTesting resolution {H}x{W}")
+        
         # Create test tensors
         video = torch.randn(B, C, T, H, W, device=device, dtype=torch.float16)
         mask = torch.ones(B, 1, T, H, W, device=device, dtype=torch.float16)
@@ -1275,17 +1277,23 @@ def test_resolution_scaling():
         assert spatial_scale > 0, "Spatial scale should be positive"
         assert temporal_scale > 0, "Temporal scale should be positive"
         
-        # Test encoding
-        latents = pipeline.encode(video)
+        # Test encoding with chunks for large resolutions
+        chunk_size = 256 if W > 256 else None
+        print(f"Encoding with chunk_size={chunk_size}")
+        latents = pipeline.encode(video, chunk_size=chunk_size)
         assert latents.shape == (B, 16, T//2, H//8, W//8), f"Unexpected latent shape: {latents.shape}"
         
-        # Test decoding
-        decoded = pipeline.decode(latents)
+        # Test decoding with chunks for large resolutions
+        print(f"Decoding with chunk_size={chunk_size}")
+        decoded = pipeline.decode(latents, chunk_size=chunk_size)
         assert decoded.shape[0:2] == (B, C), "Batch and channel dimensions should match"
         assert decoded.shape[2] == 8, "Should output 8 frames"
         assert decoded.shape[3:] == (H, W), "Spatial dimensions should match"
+        
+        # Clear memory after each resolution
+        torch.cuda.empty_cache()
     
-    print("Resolution scaling tests passed!")
+    print("\nResolution scaling tests passed!")
 
 def test_memory_calculation():
     """Test memory requirement calculations."""

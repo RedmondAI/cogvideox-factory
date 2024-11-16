@@ -320,29 +320,91 @@ class CogVideoXInpaintingPipeline:
         return spatial_scale, temporal_scale
     
     @torch.no_grad()
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
+    def encode(self, x: torch.Tensor, chunk_size: Optional[int] = None) -> torch.Tensor:
         """Encode input video to latent space.
         
         Args:
             x: Input tensor of shape [B, C, T, H, W]
+            chunk_size: Optional size for chunked processing of large inputs
             
         Returns:
             Latent tensor of shape [B, C, T//2, H//8, W//8]
         """
+        B, C, T, H, W = x.shape
+        
+        # Process in chunks if input is large
+        if chunk_size is not None and W > chunk_size:
+            # Calculate number of chunks needed
+            num_chunks = math.ceil(W / chunk_size)
+            chunks = []
+            
+            for i in range(num_chunks):
+                # Clear cache before processing chunk
+                torch.cuda.empty_cache()
+                
+                # Calculate chunk boundaries
+                start_w = i * chunk_size
+                end_w = min((i + 1) * chunk_size, W)
+                
+                # Process chunk
+                chunk_x = x[..., start_w:end_w]
+                chunk_latents = self.vae.encode(chunk_x).latent_dist.sample()
+                chunk_latents = chunk_latents * self.vae.config.scaling_factor
+                chunks.append(chunk_latents)
+                
+                # Clear cache after processing chunk
+                torch.cuda.empty_cache()
+            
+            # Concatenate chunks
+            latents = torch.cat(chunks, dim=-1)
+            return latents
+        
+        # Process normally if input is small
         latents = self.vae.encode(x).latent_dist.sample()
         latents = latents * self.vae.config.scaling_factor
         return latents
     
     @torch.no_grad()
-    def decode(self, latents: torch.Tensor) -> torch.Tensor:
+    def decode(self, latents: torch.Tensor, chunk_size: Optional[int] = None) -> torch.Tensor:
         """Decode latents to video space with temporal expansion.
         
         Args:
             latents: Latent tensor of shape [B, C, T, H, W]
+            chunk_size: Optional size for chunked processing of large inputs
             
         Returns:
             Video tensor of shape [B, C, 8, H*8, W*8]  # Fixed 8 frames output
         """
+        B, C, T, H, W = latents.shape
+        
+        # Process in chunks if input is large
+        if chunk_size is not None and W > chunk_size:
+            # Calculate number of chunks needed
+            num_chunks = math.ceil(W / chunk_size)
+            chunks = []
+            
+            for i in range(num_chunks):
+                # Clear cache before processing chunk
+                torch.cuda.empty_cache()
+                
+                # Calculate chunk boundaries
+                start_w = i * chunk_size
+                end_w = min((i + 1) * chunk_size, W)
+                
+                # Process chunk
+                chunk_latents = latents[..., start_w:end_w]
+                chunk_latents = 1 / self.vae.config.scaling_factor * chunk_latents
+                chunk_video = self.vae.decode(chunk_latents).sample
+                chunks.append(chunk_video)
+                
+                # Clear cache after processing chunk
+                torch.cuda.empty_cache()
+            
+            # Concatenate chunks
+            video = torch.cat(chunks, dim=-1)
+            return video
+        
+        # Process normally if input is small
         latents = 1 / self.vae.config.scaling_factor * latents
         video = self.vae.decode(latents).sample
         return video
