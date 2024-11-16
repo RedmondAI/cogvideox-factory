@@ -1184,17 +1184,18 @@ def test_scheduler_config():
 
 def test_end_to_end():
     """Test complete inpainting pipeline."""
-    # Load models
     vae = AutoencoderKLCogVideoX.from_pretrained(
         "THUDM/CogVideoX-5b",
         subfolder="vae",
         torch_dtype=torch.float16
-    )
+    ).to(device)
+    
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         "THUDM/CogVideoX-5b",
         subfolder="transformer",
         torch_dtype=torch.float16
-    )
+    ).to(device)
+    
     scheduler = CogVideoXDPMScheduler.from_pretrained(
         "THUDM/CogVideoX-5b",
         subfolder="scheduler"
@@ -1202,21 +1203,21 @@ def test_end_to_end():
     
     # Test dimensions
     B, C, T, H, W = 1, 3, 5, 64, 64
-    x = torch.randn(B, C, T, H, W)
-    mask = torch.ones(B, 1, T, H, W)  # Binary mask
+    x = torch.randn(B, C, T, H, W, device=device, dtype=torch.float16)  # Match model dtype
+    mask = torch.ones(B, 1, T, H, W, device=device, dtype=torch.float16)  # Match model dtype
     
     # Encode
     latents = vae.encode(x).latent_dist.sample()
     assert latents.shape == (B, 16, T//2, H//8, W//8), "Unexpected latent shape"
     
     # Prepare transformer inputs
-    timesteps = torch.zeros(B, dtype=torch.long)
-    encoder_hidden_states = torch.randn(B, 1, 4096)
+    timesteps = torch.zeros(B, device=device, dtype=torch.long)
+    encoder_hidden_states = torch.randn(B, 1, 4096, device=device, dtype=torch.float16)  # Match model dtype
     
     # Run transformer
     latents = latents.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W] for transformer
     output = transformer(
-        sample=latents,
+        hidden_states=latents,
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,
     )
