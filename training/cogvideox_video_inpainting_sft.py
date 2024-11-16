@@ -87,8 +87,23 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         self.overlap = getattr(args, 'overlap', 8) if args else 8
         self.max_resolution = getattr(args, 'max_resolution', 2048) if args else 2048
         
-        # Get underlying model if wrapped
-        self._unwrapped_transformer = unwrap_model(self.transformer)
+        # Store original unwrapped models
+        self._unwrapped_vae = vae
+        self._unwrapped_transformer = transformer
+        
+    @property
+    def transformer_config(self):
+        """Get transformer config, handling wrapped models."""
+        if hasattr(self.transformer, "module"):
+            return self.transformer.module.config
+        return self.transformer.config
+    
+    @property
+    def vae_config(self):
+        """Get VAE config, handling wrapped models."""
+        if hasattr(self.vae, "module"):
+            return self.vae.module.config
+        return self.vae.config
     
     def _calculate_scaling(self, height: int, width: int, num_frames: int):
         """Calculate scaling factors between input and model dimensions."""
@@ -169,7 +184,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             gc.collect()
             
             B, C, T, H, W = x.shape
-            temporal_ratio = self.transformer.config.temporal_compression_ratio
+            temporal_ratio = self.transformer_config.temporal_compression_ratio
             vae_spatial_ratio = 8
             
             # Process in chunks if input is large
@@ -212,7 +227,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 
                 # Blend chunks with weights
                 final_latents = torch.zeros(
-                    B, self.transformer.config.in_channels, 
+                    B, self.transformer_config.in_channels, 
                     T//temporal_ratio, H//vae_spatial_ratio, W//vae_spatial_ratio,
                     device=x.device, dtype=torch.float16
                 )
@@ -338,12 +353,12 @@ class CogVideoXInpaintingPipeline(BasePipeline):
     ) -> torch.Tensor:
         """Prepare random latents accounting for temporal and spatial compression."""
         # Get compression ratios from model configs
-        temporal_ratio = self.transformer.config.temporal_compression_ratio
+        temporal_ratio = self.transformer_config.temporal_compression_ratio
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
         
         latents_shape = (
             batch_size, 
-            self.transformer.config.in_channels, 
+            self.transformer_config.in_channels, 
             num_frames//temporal_ratio,  # Temporal compression from transformer config
             height//vae_spatial_ratio,   # VAE spatial compression (8x)
             width//vae_spatial_ratio     # VAE spatial compression (8x)
@@ -363,7 +378,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             where temporal_ratio is from transformer config and 8 is VAE's spatial compression
         """
         # Use transformer's temporal compression ratio and VAE's spatial ratio
-        temporal_ratio = self.transformer.config.temporal_compression_ratio
+        temporal_ratio = self.transformer_config.temporal_compression_ratio
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
         
         mask = F.interpolate(mask, size=(
@@ -390,7 +405,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         """
         if self.text_encoder is None:
             # Return random conditioning if no text encoder
-            return torch.randn(batch_size, 1, self.transformer.config.text_embed_dim, device=self.device, dtype=self.dtype)
+            return torch.randn(batch_size, 1, self.transformer_config.text_embed_dim, device=self.device, dtype=self.dtype)
             
         if isinstance(prompt, str):
             prompt = [prompt] * batch_size
@@ -587,7 +602,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     encoder_hidden_states = torch.randn(
                         chunk_rgb.shape[0], 
                         chunk_rgb.shape[2],  # Use actual temporal dimension
-                        self._unwrapped_transformer.config.hidden_size,  # Use unwrapped model
+                        self.transformer_config.hidden_size,  # Use property accessor
                         device=chunk_rgb.device,
                     )
                     
@@ -1026,13 +1041,13 @@ def create_pipeline(args):
     vae = AutoencoderKLCogVideoX.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="vae",
-        torch_dtype=config["dtype"]
+        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32)
     )
     
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="transformer",
-        torch_dtype=config["dtype"]
+        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32)
     )
     
     scheduler = CogVideoXDPMScheduler.from_pretrained(
@@ -1041,17 +1056,18 @@ def create_pipeline(args):
     )
     
     # Update scheduler config
-    scheduler.config.prediction_type = config["prediction_type"]
-    scheduler.config.beta_schedule = config["beta_schedule"]
-    scheduler.config.beta_start = config["beta_start"]
-    scheduler.config.beta_end = config["beta_end"]
-    scheduler.config.set_alpha_to_one = config["set_alpha_to_one"]
-    scheduler.config.steps_offset = config["steps_offset"]
-    scheduler.config.rescale_betas_zero_snr = config["rescale_betas_zero_snr"]
-    scheduler.config.snr_shift_scale = config["snr_shift_scale"]
-    scheduler.config.timestep_spacing = config["timestep_spacing"]
+    scheduler.config.prediction_type = "v_prediction"
+    scheduler.config.rescale_betas_zero_snr = True
+    scheduler.config.snr_shift_scale = 1.0
     
-    # Create pipeline
+    # Enable memory optimizations
+    if args.gradient_checkpointing:
+        transformer.gradient_checkpointing = True
+    
+    if args.enable_xformers_memory_efficient_attention:
+        transformer.enable_xformers_memory_efficient_attention()
+    
+    # Create pipeline with unwrapped models
     pipeline = CogVideoXInpaintingPipeline(
         vae=vae,
         transformer=transformer,
@@ -1059,12 +1075,12 @@ def create_pipeline(args):
         args=args,
     )
     
-    # Enable memory optimizations
-    if config["gradient_checkpointing"]:
-        transformer.gradient_checkpointing = True
+    # Prepare models for distributed training
+    vae, transformer = accelerator.prepare(vae, transformer)
     
-    if config["enable_xformers_memory_efficient_attention"]:
-        transformer.enable_xformers_memory_efficient_attention()
+    # Update pipeline with wrapped models
+    pipeline.vae = vae
+    pipeline.transformer = transformer
     
     return pipeline, config
 
@@ -1090,7 +1106,50 @@ def main(args):
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
     
-    pipeline, config = create_pipeline(args)
+    # Load models
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="vae",
+        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32)
+    )
+    
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="transformer",
+        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32)
+    )
+    
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="scheduler",
+    )
+    
+    # Update scheduler config
+    scheduler.config.prediction_type = "v_prediction"
+    scheduler.config.rescale_betas_zero_snr = True
+    scheduler.config.snr_shift_scale = 1.0
+    
+    # Enable memory optimizations
+    if args.gradient_checkpointing:
+        transformer.gradient_checkpointing = True
+    
+    if args.enable_xformers_memory_efficient_attention:
+        transformer.enable_xformers_memory_efficient_attention()
+    
+    # Create pipeline with unwrapped models
+    pipeline = CogVideoXInpaintingPipeline(
+        vae=vae,
+        transformer=transformer,
+        scheduler=scheduler,
+        args=args,
+    )
+    
+    # Prepare models for distributed training
+    vae, transformer = accelerator.prepare(vae, transformer)
+    
+    # Update pipeline with wrapped models
+    pipeline.vae = vae
+    pipeline.transformer = transformer
     
     # Dataset and DataLoaders creation
     train_dataset = VideoInpaintingDataset(
