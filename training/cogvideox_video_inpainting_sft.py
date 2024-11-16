@@ -425,27 +425,32 @@ def main(args):
         args.pretrained_model_name_or_path,
         subfolder="vae",
         revision=args.revision,
+        torch_dtype=torch.bfloat16,  # Match model precision
     )
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="transformer",
         revision=args.revision,
+        torch_dtype=torch.bfloat16,  # Match model precision
     )
     
     # Modify transformer input channels to accept mask
     old_proj = transformer.patch_embed.proj
+    original_in_channels = old_proj.weight.size(1)  # Get actual number of input channels
     new_proj = torch.nn.Conv2d(
-        old_proj.in_channels + 1,  # Add mask channel
+        original_in_channels + 1,  # Add mask channel to existing channels
         old_proj.out_channels,
         kernel_size=old_proj.kernel_size,
         stride=old_proj.stride,
         padding=old_proj.padding,
-    )
+    ).to(dtype=torch.bfloat16)  # Match model precision
     
     # Initialize new weights
     with torch.no_grad():
-        new_proj.weight[:, :3] = old_proj.weight
-        new_proj.weight[:, 3:] = 0  # Initialize mask channel to 0
+        # Copy all existing channels
+        new_proj.weight[:, :original_in_channels] = old_proj.weight
+        # Initialize new mask channel to 0
+        new_proj.weight[:, original_in_channels:] = 0
         new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
     
     # Replace the projection layer

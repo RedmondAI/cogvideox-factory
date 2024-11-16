@@ -405,8 +405,9 @@ def test_model_modification():
     assert isinstance(old_proj, nn.Conv2d), "Expected Conv2d for patch embedding projection"
     
     # Create new projection with extra channel for mask
+    original_in_channels = old_proj.weight.size(1)  # Get actual number of input channels
     new_proj = nn.Conv2d(
-        old_proj.in_channels + 1,  # Add mask channel
+        original_in_channels + 1,  # Add mask channel to existing channels
         old_proj.out_channels,
         kernel_size=old_proj.kernel_size,
         stride=old_proj.stride,
@@ -415,8 +416,10 @@ def test_model_modification():
     
     # Initialize new weights
     with torch.no_grad():
-        new_proj.weight[:, :3] = old_proj.weight
-        new_proj.weight[:, 3:] = 0  # Initialize mask channel to 0
+        # Copy all existing channels
+        new_proj.weight[:, :original_in_channels] = old_proj.weight
+        # Initialize new mask channel to 0
+        new_proj.weight[:, original_in_channels:] = 0
         new_proj.bias = nn.Parameter(old_proj.bias.clone())
     
     # Replace the projection layer
@@ -424,7 +427,8 @@ def test_model_modification():
     
     # Test forward pass with chunked input
     batch_size, chunk_size = 1, 64  # Increased chunk size to match training
-    test_input = torch.randn(batch_size, chunk_size, 4, 64, 64, dtype=torch.bfloat16)  # 4 channels (RGB + mask)
+    # Create input with correct number of channels (original + mask)
+    test_input = torch.randn(batch_size, chunk_size, original_in_channels + 1, 64, 64, dtype=torch.bfloat16)
     encoder_hidden_states = torch.randn(batch_size, chunk_size, model.config.hidden_size, dtype=torch.bfloat16)
     timestep = torch.zeros(batch_size, dtype=torch.long)
     
@@ -435,7 +439,7 @@ def test_model_modification():
             timestep=timestep,
         )
     
-    assert output.shape == (batch_size, chunk_size, 3, 64, 64), f"Wrong output shape: {output.shape}"
+    assert output.shape == (batch_size, chunk_size, original_in_channels, 64, 64), f"Wrong output shape: {output.shape}"
     assert output.dtype == torch.bfloat16, f"Wrong output dtype: {output.dtype}"
     print("Model modification tests passed!")
 
