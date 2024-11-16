@@ -427,7 +427,7 @@ class CogVideoXInpaintingPipeline:
                 chunk_latents = 1 / self.vae.config.scaling_factor * chunk_latents
                 chunk_video = self.vae.decode(chunk_latents).sample
                 
-                # Create blending weights
+                # Create blending weights for exact chunk width
                 weight = torch.ones_like(chunk_video)
                 if i > 0:  # Left overlap
                     left_size = overlap
@@ -443,7 +443,7 @@ class CogVideoXInpaintingPipeline:
                 torch.cuda.empty_cache()
             
             # Blend chunks with weights
-            final_video = torch.zeros(B, C, 8, H*8, W*8, device=latents.device, dtype=torch.float16)
+            final_video = torch.zeros(B, 3, 8, H*8, W*8, device=latents.device, dtype=torch.float16)  # Always 3 channels out
             weight_sum = torch.zeros_like(final_video)
             
             for chunk, weight, start_w in zip(chunks, weights, chunk_starts):
