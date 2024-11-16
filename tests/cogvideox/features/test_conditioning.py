@@ -66,9 +66,10 @@ def test_text_conditioning():
 
 def test_temporal_smoothing():
     """Test temporal smoothing functionality."""
-    # Create test sequence
+    # Create test sequence and normalize to [-1, 1]
     B, C, T, H, W = 1, 3, 16, 64, 64
     frames = torch.randn(B, C, T, H, W, device=device)
+    frames = torch.tanh(frames)  # Normalize to [-1, 1]
     
     # Test different window sizes
     window_sizes = [2, 4, 8]
@@ -103,22 +104,25 @@ def test_temporal_smoothing():
             f"Expected {frames.shape}, got {smoothed.shape}"
         
         # Verify temporal consistency
+        # Since input is normalized to [-1, 1], max difference should be smaller
         temp_diff = torch.abs(smoothed[:, :, 1:] - smoothed[:, :, :-1])
         max_jump = temp_diff.max().item()
-        assert max_jump < 1.0, f"Large temporal discontinuity: {max_jump}"
+        max_allowed_jump = 2.0 / window  # Maximum possible difference for normalized input
+        assert max_jump <= max_allowed_jump, \
+            f"Large temporal discontinuity: {max_jump} > {max_allowed_jump} for window {window}"
     
     print("Temporal smoothing tests passed!")
 
 def test_temporal_smoothing_edge_cases():
     """Test temporal smoothing edge cases."""
-    # Test single frame
-    single_frame = torch.randn(1, 3, 1, 64, 64, device=device)
+    # Test single frame with normalized values
+    single_frame = torch.tanh(torch.randn(1, 3, 1, 64, 64, device=device))
     # For single frame, just return as is
     smoothed = single_frame.clone()
     assert torch.allclose(smoothed, single_frame), "Single frame smoothing failed"
     
-    # Test very short sequence
-    short_seq = torch.randn(1, 3, 2, 64, 64, device=device)
+    # Test very short sequence with normalized values
+    short_seq = torch.tanh(torch.randn(1, 3, 2, 64, 64, device=device))
     # For short sequence, use minimal window size
     padded = torch.nn.functional.pad(
         short_seq, 
@@ -133,5 +137,10 @@ def test_temporal_smoothing_edge_cases():
     )
     assert smoothed.shape == short_seq.shape, \
         f"Short sequence shape mismatch. Expected {short_seq.shape}, got {smoothed.shape}"
+    
+    # Verify temporal consistency for short sequence
+    temp_diff = torch.abs(smoothed[:, :, 1:] - smoothed[:, :, :-1])
+    max_jump = temp_diff.max().item()
+    assert max_jump <= 1.0, f"Large temporal discontinuity in short sequence: {max_jump}"
     
     print("Temporal smoothing edge cases passed!")
