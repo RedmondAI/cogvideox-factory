@@ -334,13 +334,24 @@ class CogVideoXInpaintingPipeline:
             mask: Binary mask of shape [B, 1, T, H, W]
             
         Returns:
-            Processed mask of shape [B, 1, T//ratio, H//8, W//8]
+            Processed mask of shape [B, 1, T//(vae_ratio * transformer_ratio), H//8, W//8]
+            where vae_ratio is 2 (from VAE temporal compression) and transformer_ratio is from config
         """
+        # First apply VAE temporal compression (T -> T//2)
         mask = F.interpolate(mask, size=(
-            mask.shape[2]//self.transformer.config.temporal_compression_ratio,
-            mask.shape[3]//8,
-            mask.shape[4]//8
+            mask.shape[2]//2,  # VAE temporal compression
+            mask.shape[3]//8,  # VAE spatial compression
+            mask.shape[4]//8   # VAE spatial compression
         ), mode='nearest')
+        
+        # Then apply transformer temporal compression (T//2 -> T//(2*ratio))
+        if self.transformer.config.temporal_compression_ratio > 1:
+            mask = F.interpolate(mask, size=(
+                mask.shape[2]//self.transformer.config.temporal_compression_ratio,
+                mask.shape[3],
+                mask.shape[4]
+            ), mode='nearest')
+        
         return mask
     
     def prepare_encoder_hidden_states(

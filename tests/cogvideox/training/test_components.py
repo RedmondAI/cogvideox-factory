@@ -340,8 +340,9 @@ def test_pipeline_components():
     
     # Test mask preparation
     prepared_mask = pipeline.prepare_mask(mask)
-    assert prepared_mask.shape[2] == T // pipeline.transformer.config.temporal_compression_ratio, \
-        "Temporal dimension not properly compressed in mask"
+    total_temporal_ratio = 2 * pipeline.transformer.config.temporal_compression_ratio  # VAE (2) * transformer ratio
+    assert prepared_mask.shape[2] == T // total_temporal_ratio, \
+        f"Temporal dimension not properly compressed in mask. Expected {T//total_temporal_ratio}, got {prepared_mask.shape[2]}"
     
     # Test latent preparation
     latents = pipeline.prepare_latents(B, T, H, W)
