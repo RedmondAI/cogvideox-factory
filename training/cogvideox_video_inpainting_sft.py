@@ -826,7 +826,7 @@ def train_loop(
     model_dtype = next(model.parameters()).dtype
     
     # Enable gradient checkpointing for memory efficiency
-    model.gradient_checkpointing_enable()
+    model.gradient_checkpointing = True
     assert model.is_gradient_checkpointing, "Gradient checkpointing should be enabled"
     
     # Verify model configuration
@@ -1140,7 +1140,7 @@ def create_pipeline(args):
     
     # Enable memory optimizations
     if config["gradient_checkpointing"]:
-        transformer.enable_gradient_checkpointing()
+        transformer.gradient_checkpointing = True
     
     if config["enable_xformers_memory_efficient_attention"]:
         transformer.enable_xformers_memory_efficient_attention()

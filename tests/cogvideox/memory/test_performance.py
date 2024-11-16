@@ -19,7 +19,7 @@ def test_memory_calculation():
     ).to(device)
     
     # Enable gradient checkpointing for memory efficiency
-    transformer.gradient_checkpointing_enable()
+    transformer.gradient_checkpointing = True
     assert transformer.is_gradient_checkpointing, "Gradient checkpointing should be enabled"
     
     # Get initial memory usage
