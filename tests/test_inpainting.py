@@ -1648,7 +1648,7 @@ def test_training_components():
     
     # Test VAE encoding/decoding
     latent = vae.encode(clean_frames).latent_dist.sample()
-    decoded = vae.decode(latent)
+    decoded = vae.decode(latent).sample  # Access .sample attribute
     
     # Handle potential temporal expansion
     if decoded.shape[2] > clean_frames.shape[2]:
@@ -1816,7 +1816,7 @@ def test_training_components():
     
     # Test VAE encoding/decoding
     latent = vae.encode(clean_frames).latent_dist.sample()
-    decoded = vae.decode(latent)
+    decoded = vae.decode(latent).sample  # Access .sample attribute
     
     # Handle potential temporal expansion
     if decoded.shape[2] > clean_frames.shape[2]:
@@ -2059,7 +2059,7 @@ def test_vae_temporal():
     assert latent.shape[2] == 2, f"Expected 2 latent frames, got {latent.shape[2]}"
     
     # Test expansion ratio
-    output = vae.decode(latent)
+    output = vae.decode(latent).sample  # Access .sample attribute
     assert output.shape[2] == 8, f"Expected 8 output frames, got {output.shape[2]}"
     
     print("VAE temporal test passed!")
@@ -2083,7 +2083,7 @@ def test_vae_dimensions():
     assert latent.shape[4] == 4, f"Expected W/8 width, got {latent.shape[4]}"
     
     # Test latent → output transformation
-    output = vae.decode(latent)
+    output = vae.decode(latent).sample  # Access .sample attribute
     
     # Check dimensions
     assert output.shape[1] == 3, f"Expected 3 RGB channels, got {output.shape[1]}"
@@ -2468,7 +2468,7 @@ def test_vae_temporal_output():
         assert latent.shape[2] < x.shape[2], f"Latent temporal dim {latent.shape[2]} should be smaller than input {x.shape[2]}"
         
         # Decode
-        decoded = vae.decode(latent)
+        decoded = vae.decode(latent).sample  # Access .sample attribute
         
         # Handle potential temporal expansion
         if decoded.shape[2] > input_frames:
@@ -2524,7 +2524,7 @@ def test_training_components():
     
     # Test VAE encoding/decoding
     latent = vae.encode(clean_frames).latent_dist.sample()
-    decoded = vae.decode(latent)
+    decoded = vae.decode(latent).sample  # Access .sample attribute
     
     # Handle potential temporal expansion
     if decoded.shape[2] > clean_frames.shape[2]:
@@ -2692,7 +2692,7 @@ def test_training_components():
     
     # Test VAE encoding/decoding
     latent = vae.encode(clean_frames).latent_dist.sample()
-    decoded = vae.decode(latent)
+    decoded = vae.decode(latent).sample  # Access .sample attribute
     
     # Handle potential temporal expansion
     if decoded.shape[2] > clean_frames.shape[2]:
