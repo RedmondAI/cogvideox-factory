@@ -10,6 +10,7 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Union
+import math
 
 from diffusers import (
     AutoencoderKLCogVideoX,
@@ -1263,6 +1264,10 @@ def test_resolution_scaling():
         (720, 1280),   # HD
     ]
     
+    # Chunking parameters
+    chunk_size = 256  # Base chunk size
+    overlap = 32      # Overlap size
+    
     for H, W in resolutions:
         print(f"\nTesting resolution {H}x{W}")
         
@@ -1272,23 +1277,53 @@ def test_resolution_scaling():
         
         # Get scaling factors
         spatial_scale, temporal_scale = pipeline.validate_dimensions(video, mask)
+        print(f"Scaling factors - Spatial: {spatial_scale:.2f}, Temporal: {temporal_scale:.2f}")
         
         # Check scaling is reasonable
         assert spatial_scale > 0, "Spatial scale should be positive"
         assert temporal_scale > 0, "Temporal scale should be positive"
         
-        # Test encoding with chunks for large resolutions
-        chunk_size = 256 if W > 256 else None
-        print(f"Encoding with chunk_size={chunk_size}")
-        latents = pipeline.encode(video, chunk_size=chunk_size)
+        # Determine if chunking is needed
+        use_chunks = W > chunk_size
+        if use_chunks:
+            print(f"Using chunks - Size: {chunk_size}, Overlap: {overlap}")
+            num_chunks = math.ceil(W / (chunk_size - 2 * overlap))
+            print(f"Number of chunks: {num_chunks}")
+        
+        # Test encoding
+        latents = pipeline.encode(
+            video, 
+            chunk_size=chunk_size if use_chunks else None,
+            overlap=overlap
+        )
+        print(f"Encoded shape: {latents.shape}")
         assert latents.shape == (B, 16, T//2, H//8, W//8), f"Unexpected latent shape: {latents.shape}"
         
-        # Test decoding with chunks for large resolutions
-        print(f"Decoding with chunk_size={chunk_size}")
-        decoded = pipeline.decode(latents, chunk_size=chunk_size)
+        # Test decoding
+        decoded = pipeline.decode(
+            latents,
+            chunk_size=chunk_size if use_chunks else None,
+            overlap=overlap
+        )
+        print(f"Decoded shape: {decoded.shape}")
         assert decoded.shape[0:2] == (B, C), "Batch and channel dimensions should match"
         assert decoded.shape[2] == 8, "Should output 8 frames"
         assert decoded.shape[3:] == (H, W), "Spatial dimensions should match"
+        
+        # Test for visible seams in output (basic check)
+        if use_chunks:
+            # Check smoothness at chunk boundaries
+            chunk_boundaries = [(i * (chunk_size - 2 * overlap)) * 8 for i in range(1, num_chunks)]
+            for boundary in chunk_boundaries:
+                if boundary >= W * 8:
+                    continue
+                # Compare values across boundary
+                left = decoded[..., boundary-1]
+                right = decoded[..., boundary]
+                diff = torch.abs(left - right)
+                max_diff = diff.max().item()
+                print(f"Max difference at boundary {boundary}: {max_diff:.6f}")
+                assert max_diff < 0.1, f"Large discontinuity ({max_diff:.6f}) at chunk boundary {boundary}"
         
         # Clear memory after each resolution
         torch.cuda.empty_cache()
