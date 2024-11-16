@@ -1338,8 +1338,8 @@ def test_resolution_scaling():
             print("\nChecking chunk boundaries:")
             
             for boundary in chunk_boundaries:
-                # Check a window around the boundary
-                window_size = overlap // 2  # Half the overlap size
+                # Check a window around the boundary (in pixel space)
+                window_size = overlap * 2  # Use larger window to ensure we capture the transition
                 
                 # Use pipeline's boundary check method
                 mean_diff, max_diff = pipeline.check_boundary_continuity(decoded, boundary, window_size)
@@ -1349,6 +1349,7 @@ def test_resolution_scaling():
                     continue
                 
                 print(f"Boundary {boundary}:")
+                print(f"  Window size: {window_size} pixels")
                 print(f"  Mean difference: {mean_diff:.6f}")
                 print(f"  Max difference: {max_diff:.6f}")
                 

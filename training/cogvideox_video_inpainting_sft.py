@@ -604,7 +604,7 @@ class CogVideoXInpaintingPipeline:
         Args:
             video: Video tensor of shape [B, C, T, H, W]
             boundary: Boundary position in pixels
-            window_size: Size of window to check around boundary
+            window_size: Size of window to check around boundary (in pixels)
             
         Returns:
             Tuple of (mean_diff, max_diff) at the boundary
@@ -615,30 +615,27 @@ class CogVideoXInpaintingPipeline:
         right_start = boundary
         right_end = min(video.shape[-1], boundary + window_size)
         
-        window_width = min(left_end - left_start, right_end - right_start)
-        if window_width <= 0:
+        # Ensure we have at least 1 pixel on each side
+        if left_start >= left_end or right_start >= right_end:
             return 0.0, 0.0  # Skip if window is invalid
-        
-        # Adjust window to be equal size on both sides
-        left_end = left_start + window_width
-        right_end = right_start + window_width
         
         # Get values around boundary
         left_vals = video[..., left_start:left_end].float()
         right_vals = video[..., right_start:right_end].float()
         
         # Reshape tensors to combine all dimensions except the last
-        left_flat = left_vals.reshape(-1, window_width)
-        right_flat = right_vals.reshape(-1, window_width)
+        # Combine batch, channel, time, and height dimensions
+        left_flat = left_vals.reshape(-1, left_vals.shape[-1])
+        right_flat = right_vals.reshape(-1, right_vals.shape[-1])
         
         # Calculate mean values along the seam
-        left_mean = left_flat.mean(dim=0)
+        left_mean = left_flat.mean(dim=0)  # Average over all dimensions except width
         right_mean = right_flat.mean(dim=0)
         mean_diff = (right_mean - left_mean).abs().mean().item()
         
         # Calculate max difference along the seam
         diff_flat = (right_flat - left_flat).abs()
-        max_diff = diff_flat.mean(dim=0).max().item()
+        max_diff = diff_flat.mean(dim=0).max().item()  # Max of the mean differences
         
         return mean_diff, max_diff
 
