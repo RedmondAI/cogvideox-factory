@@ -411,7 +411,7 @@ def main(args):
     
     # Replace the projection layer
     transformer.patch_embed.proj = new_proj
-
+    
     # Freeze VAE
     vae.requires_grad_(False)
     
@@ -568,17 +568,16 @@ def main(args):
                             
                             # Model forward pass
                             noisy_latents = pipeline.scheduler.add_noise(gt_latents, noise, timesteps)
-                            model_input = torch.cat([noisy_latents, mask], dim=2)
-                            batch_size = model_input.shape[0]
+                            batch_size = noisy_latents.shape[0]
                             timesteps = timesteps.expand(batch_size)
                             encoder_hidden_states = torch.randn(
                                 batch_size, 
                                 args.chunk_size, 
-                                transformer.config.cross_attention_dim,
+                                768,  # Standard transformer hidden dimension
                                 device=accelerator.device,
                             )
                             noise_pred = transformer(
-                                sample=model_input,
+                                sample=noisy_latents,
                                 encoder_hidden_states=encoder_hidden_states,
                                 timestep=timesteps,
                             )
