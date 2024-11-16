@@ -87,23 +87,19 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         self.overlap = getattr(args, 'overlap', 8) if args else 8
         self.max_resolution = getattr(args, 'max_resolution', 2048) if args else 2048
         
-        # Store original unwrapped models
-        self._unwrapped_vae = vae
-        self._unwrapped_transformer = transformer
-        
+        # Store original configs
+        self._transformer_config = transformer.config
+        self._vae_config = vae.config
+    
     @property
     def transformer_config(self):
-        """Get transformer config, handling wrapped models."""
-        if hasattr(self.transformer, "module"):
-            return self.transformer.module.config
-        return self.transformer.config
+        """Get transformer config."""
+        return self._transformer_config
     
     @property
     def vae_config(self):
-        """Get VAE config, handling wrapped models."""
-        if hasattr(self.vae, "module"):
-            return self.vae.module.config
-        return self.vae.config
+        """Get VAE config."""
+        return self._vae_config
     
     def _calculate_scaling(self, height: int, width: int, num_frames: int):
         """Calculate scaling factors between input and model dimensions."""
@@ -1136,20 +1132,13 @@ def main(args):
     if args.enable_xformers_memory_efficient_attention:
         transformer.enable_xformers_memory_efficient_attention()
     
-    # Create pipeline with unwrapped models
+    # Create pipeline
     pipeline = CogVideoXInpaintingPipeline(
         vae=vae,
         transformer=transformer,
         scheduler=scheduler,
         args=args,
     )
-    
-    # Prepare models for distributed training
-    vae, transformer = accelerator.prepare(vae, transformer)
-    
-    # Update pipeline with wrapped models
-    pipeline.vae = vae
-    pipeline.transformer = transformer
     
     # Dataset and DataLoaders creation
     train_dataset = VideoInpaintingDataset(
@@ -1189,12 +1178,12 @@ def main(args):
         num_workers=args.num_workers,
         collate_fn=collate_fn,
     )
-
+    
     # Optimizer
     if args.use_8bit_adam:
         import bitsandbytes as bnb
         optimizer = bnb.optim.AdamW8bit(
-            pipeline.transformer.parameters(),
+            transformer.parameters(),
             lr=args.learning_rate,
             betas=(args.beta1, args.beta2),
             weight_decay=args.weight_decay,
@@ -1202,37 +1191,32 @@ def main(args):
         )
     else:
         optimizer = torch.optim.AdamW(
-            pipeline.transformer.parameters(),
+            transformer.parameters(),
             lr=args.learning_rate,
             betas=(args.beta1, args.beta2),
             weight_decay=args.weight_decay,
             eps=args.epsilon,
         )
     
-    # Calculate total training steps
-    num_update_steps_per_epoch = len(train_dataloader) // args.gradient_accumulation_steps
-    args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+    # Prepare for distributed training
+    pipeline, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
+        pipeline, optimizer, train_dataloader, val_dataloader
+    )
     
-    # Scheduler
+    # Get scheduler
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+    
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
-        num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
-        num_training_steps=args.max_train_steps * accelerator.num_processes,
+        num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
+        num_training_steps=max_train_steps * args.gradient_accumulation_steps,
     )
     
-    # Prepare everything with accelerator
-    pipeline.transformer, optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(
-        pipeline.transformer, optimizer, train_dataloader, val_dataloader, lr_scheduler
-    )
-    
-    # Initialize gradient scaler for mixed precision
-    if args.mixed_precision == "fp16":
-        scaler = GradScaler("cuda")
-        use_scaler = True
-    else:
-        scaler = None
-        use_scaler = False
+    # Store original configs
+    pipeline._transformer_config = transformer.config
+    pipeline._vae_config = vae.config
     
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
