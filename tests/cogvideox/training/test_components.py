@@ -10,9 +10,16 @@ from diffusers import (
 from diffusers.utils.torch_utils import randn_tensor
 from ..utils import create_layer_norm
 import torch.nn.functional as F
+import sys
+from pathlib import Path
 
-# Import training functions
-from training.cogvideox_video_inpainting_sft import (
+# Add project root to path
+project_root = str(Path(__file__).parent.parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+# Import training components
+from training.components import (
     pad_to_multiple,
     unpad,
     temporal_smooth,
