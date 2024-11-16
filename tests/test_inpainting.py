@@ -1627,11 +1627,12 @@ def test_training_components():
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
     
-    # Test with dimensions matching model config but ensuring minimum size for VAE
+    # Test with dimensions that ensure minimum 32x32 after VAE spatial ratio
     batch_size = 2
     num_frames = model.config.sample_frames  # 49 frames
-    height = max(model.config.sample_height, 32 * 8)  # At least 256 pixels to ensure 32x32 after VAE
-    width = max(model.config.sample_width, 32 * 8)    # At least 256 pixels to ensure 32x32 after VAE
+    vae_min_dim = 32  # Minimum dimension needed by VAE
+    height = max(model.config.sample_height, vae_min_dim * 8)  # At least 256 pixels
+    width = max(model.config.sample_width, vae_min_dim * 8)    # At least 256 pixels
     
     # VAE has 2.5x temporal compression and 8x spatial
     vae_temporal_ratio = 2.5
@@ -1641,8 +1642,8 @@ def test_training_components():
     # Start with RGB frames [B, C, T, H, W]
     clean_frames = torch.randn(
         batch_size, 3, target_frames,
-        height // vae_spatial_ratio,
-        width // vae_spatial_ratio,
+        height // vae_spatial_ratio,  # Will be at least 32 pixels
+        width // vae_spatial_ratio,   # Will be at least 32 pixels
         device=device, dtype=torch.float16
     )
     
