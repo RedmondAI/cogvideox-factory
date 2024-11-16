@@ -8,7 +8,7 @@ from training.components import (
     compute_loss_v_pred,
     compute_loss_v_pred_with_snr,
     handle_vae_temporal_output,
-    CogVideoXInpaintingPipeline
+    CogVideoXInpaintingPipeline as BasePipeline
 )
 
 # Keep existing imports
@@ -64,7 +64,7 @@ from training.dataset import VideoInpaintingDataset
 
 logger = get_logger(__name__)
 
-class CogVideoXInpaintingPipeline:
+class CogVideoXInpaintingPipeline(BasePipeline):
     def __init__(
         self,
         vae: AutoencoderKLCogVideoX,
@@ -74,29 +74,7 @@ class CogVideoXInpaintingPipeline:
         tokenizer=None,
         args=None,
     ):
-        self.vae = vae
-        self.transformer = transformer
-        self.scheduler = scheduler
-        self.text_encoder = text_encoder
-        self.tokenizer = tokenizer
-        
-        # Set default device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.dtype = torch.float16
-        
-        # Move models to device
-        self.vae = self.vae.to(self.device, dtype=self.dtype)
-        self.transformer = self.transformer.to(self.device, dtype=self.dtype)
-        
-        # Configure scheduler
-        self.scheduler.config.prediction_type = "v_prediction"
-        self.scheduler.config.rescale_betas_zero_snr = True
-        self.scheduler.config.snr_shift_scale = 1.0
-        
-        # Get model dimensions
-        self.model_height = transformer.config.sample_height
-        self.model_width = transformer.config.sample_width
-        self.model_frames = transformer.config.sample_frames
+        super().__init__(vae, transformer, scheduler, text_encoder, tokenizer)
         
         # Set processing parameters
         self.chunk_size = getattr(args, 'chunk_size', 64) if args else 64
