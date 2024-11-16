@@ -61,17 +61,18 @@ def pad_to_multiple(x: torch.Tensor, multiple: int = 64, max_dim: int = 2048) ->
     print(f"Input dimensions: h={h}, w={w}")
     
     # Check if input dimensions exceed maximum
-    if h > max_dim or w > max_dim:
-        raise ValueError(f"Input dimensions ({h}, {w}) exceed maximum safe size {max_dim}")
+    if h >= max_dim or w >= max_dim:
+        raise ValueError(f"Input dimensions ({h}, {w}) exceed or equal maximum safe size {max_dim}")
     
+    # Calculate padding
     pad_h = (multiple - h % multiple) % multiple
     pad_w = (multiple - w % multiple) % multiple
     print(f"Padding amounts: pad_h={pad_h}, pad_w={pad_w}")
     print(f"Final dimensions will be: h={h+pad_h}, w={w+pad_w}")
     
-    # Check if padded dimensions exceed or equal maximum (we want strictly less than max_dim)
+    # Check if padded dimensions would exceed maximum
     if h + pad_h >= max_dim or w + pad_w >= max_dim:
-        raise ValueError(f"Padded dimensions ({h+pad_h}, {w+pad_w}) must be strictly less than maximum size {max_dim}")
+        raise ValueError(f"Padded dimensions ({h+pad_h}, {w+pad_w}) would exceed or equal maximum size {max_dim}")
     
     # Pad tensor
     x_padded = F.pad(x, (0, pad_w, 0, pad_h))

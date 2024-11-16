@@ -1411,14 +1411,14 @@ def test_padding_edge_cases():
     """Test padding with various edge cases."""
     from cogvideox_video_inpainting_sft import pad_to_multiple, unpad
     
-    # Test near max dimension
-    x = torch.randn(1, 3, 8, 2000, 2000)  # Near max_dim
-    with pytest.raises(ValueError, match="Input dimensions.*exceed maximum"):
+    # Test input dimensions at max
+    x = torch.randn(1, 3, 8, 2048, 2048)  # At max_dim
+    with pytest.raises(ValueError, match="Input dimensions.*exceed or equal maximum"):
         pad_to_multiple(x)
     
-    # Test padding that would exceed max
-    x = torch.randn(1, 3, 8, 2030, 2030)  # Would exceed max after padding
-    with pytest.raises(ValueError, match="Padded dimensions.*must be strictly less"):
+    # Test input dimensions that would exceed max after padding
+    x = torch.randn(1, 3, 8, 2000, 2000)  # Would exceed max after padding
+    with pytest.raises(ValueError, match="Padded dimensions.*would exceed or equal maximum"):
         pad_to_multiple(x)
     
     # Test unpadding with zero pad sizes
