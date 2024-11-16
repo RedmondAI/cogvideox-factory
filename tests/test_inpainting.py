@@ -1259,9 +1259,9 @@ def test_resolution_scaling():
     # Test with different resolutions
     B, C, T = 1, 3, 5
     resolutions = [
-        (64, 64),      # Small
-        (480, 640),    # SD
-        (720, 1280),   # HD
+        (64, 64),      # Small (no chunking needed)
+        (480, 640),    # SD (will use chunks)
+        (720, 1280),   # HD (will use chunks)
     ]
     
     # Chunking parameters
@@ -1271,8 +1271,17 @@ def test_resolution_scaling():
     for H, W in resolutions:
         print(f"\nTesting resolution {H}x{W}")
         
-        # Create test tensors
-        video = torch.randn(B, C, T, H, W, device=device, dtype=torch.float16)
+        # Create test tensors with a smooth gradient pattern
+        x = torch.linspace(0, 1, W, device=device, dtype=torch.float16)
+        y = torch.linspace(0, 1, H, device=device, dtype=torch.float16)
+        grid_x, grid_y = torch.meshgrid(x, y, indexing='xy')
+        pattern = (grid_x + grid_y) / 2.0
+        
+        # Expand pattern to video dimensions
+        video = pattern.unsqueeze(0).unsqueeze(0).unsqueeze(0)  # Add B, C, T dims
+        video = video.expand(B, C, T, H, W)
+        video = video.to(dtype=torch.float16)
+        
         mask = torch.ones(B, 1, T, H, W, device=device, dtype=torch.float16)
         
         # Get scaling factors
@@ -1286,9 +1295,10 @@ def test_resolution_scaling():
         # Determine if chunking is needed
         use_chunks = W > chunk_size
         if use_chunks:
-            print(f"Using chunks - Size: {chunk_size}, Overlap: {overlap}")
-            num_chunks = math.ceil(W / (chunk_size - 2 * overlap))
-            print(f"Number of chunks: {num_chunks}")
+            effective_chunk_size = chunk_size - 2 * overlap
+            num_chunks = math.ceil(W / effective_chunk_size)
+            print(f"Using chunks - Base size: {chunk_size}, Effective size: {effective_chunk_size}")
+            print(f"Overlap: {overlap}, Number of chunks: {num_chunks}")
         
         # Test encoding
         latents = pipeline.encode(
@@ -1312,18 +1322,34 @@ def test_resolution_scaling():
         
         # Test for visible seams in output (basic check)
         if use_chunks:
-            # Check smoothness at chunk boundaries
-            chunk_boundaries = [(i * (chunk_size - 2 * overlap)) * 8 for i in range(1, num_chunks)]
-            for boundary in chunk_boundaries:
-                if boundary >= W * 8:
-                    continue
-                # Compare values across boundary
-                left = decoded[..., boundary-1]
-                right = decoded[..., boundary]
-                diff = torch.abs(left - right)
-                max_diff = diff.max().item()
-                print(f"Max difference at boundary {boundary}: {max_diff:.6f}")
-                assert max_diff < 0.1, f"Large discontinuity ({max_diff:.6f}) at chunk boundary {boundary}"
+            # Calculate expected chunk boundaries
+            boundaries = []
+            offset = 0
+            for i in range(num_chunks - 1):
+                offset += effective_chunk_size
+                if offset >= W:
+                    break
+                boundaries.append(offset * 8)  # Account for VAE upscaling
+            
+            # Check smoothness at boundaries
+            print("\nChecking chunk boundaries:")
+            for boundary in boundaries:
+                # Check a window around the boundary
+                window_size = 8
+                left_vals = decoded[..., boundary-window_size:boundary].float()
+                right_vals = decoded[..., boundary:boundary+window_size].float()
+                
+                # Calculate statistics
+                mean_diff = (right_vals.mean() - left_vals.mean()).abs().item()
+                max_diff = (right_vals - left_vals).abs().max().item()
+                
+                print(f"Boundary {boundary}:")
+                print(f"  Mean difference: {mean_diff:.6f}")
+                print(f"  Max difference: {max_diff:.6f}")
+                
+                # Check for discontinuities
+                assert mean_diff < 0.1, f"Large mean discontinuity ({mean_diff:.6f}) at boundary {boundary}"
+                assert max_diff < 0.2, f"Large max discontinuity ({max_diff:.6f}) at boundary {boundary}"
         
         # Clear memory after each resolution
         torch.cuda.empty_cache()
