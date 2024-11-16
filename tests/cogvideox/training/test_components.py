@@ -109,14 +109,30 @@ def test_training_components():
     # Convert to [B, T, C, H, W] format for transformer
     noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
     
+    # Create position IDs for rotary embeddings
+    position_ids = torch.arange(noisy_frames.shape[1], device=noisy_frames.device)
+    
+    # Apply patch embedding
+    B, T, C, H, W = noisy_frames.shape
+    noisy_frames = model.patch_embed.proj(noisy_frames.reshape(-1, C, H, W))  # [B*T, 3072, H//2, W//2]
+    
+    # Reshape back maintaining [B, T, C, H, W] format
+    _, C_latent, H_latent, W_latent = noisy_frames.shape
+    noisy_frames = noisy_frames.reshape(B, T, C_latent, H_latent, W_latent)
+    
+    # Apply layer normalization to hidden states
+    hidden_norm = model.norm
+    noisy_frames = hidden_norm(noisy_frames)
+    
     # Create dummy encoder hidden states
     encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
     
-    # Test model forward pass
+    # Test model forward pass with position IDs
     noise_pred = model(
         hidden_states=noisy_frames,
         timestep=timesteps.to(dtype=torch.float16),
         encoder_hidden_states=encoder_hidden_states,
+        position_ids=position_ids,
     ).sample
     
     # Verify output shape matches input shape
