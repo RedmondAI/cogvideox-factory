@@ -424,8 +424,15 @@ def test_model_modification():
     # Test forward pass with chunked input
     batch_size, chunk_size = 1, 32
     test_input = torch.randn(batch_size, chunk_size, 4, 64, 64)  # 4 channels (RGB + mask)
-    with torch.cuda.amp.autocast(enabled=True):  # Test with mixed precision
-        output = model(test_input)
+    encoder_hidden_states = torch.randn(batch_size, chunk_size, model.config.cross_attention_dim)
+    timestep = torch.zeros(batch_size, dtype=torch.long)
+    
+    with torch.amp.autocast('cuda', enabled=True):  # Test with mixed precision
+        output = model(
+            test_input,
+            encoder_hidden_states=encoder_hidden_states,
+            timestep=timestep,
+        )
     
     assert output.shape == (batch_size, chunk_size, 3, 64, 64), f"Wrong output shape: {output.shape}"
     print("Model modification tests passed!")

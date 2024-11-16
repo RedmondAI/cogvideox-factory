@@ -394,21 +394,24 @@ def main(args):
     )
     
     # Modify transformer input channels to accept mask
-    transformer.config.in_channels += 1  # Add channel for mask
-    old_conv = transformer.conv_in
-    transformer.conv_in = torch.nn.Conv3d(
-        transformer.config.in_channels,
-        transformer.conv_in.out_channels,
-        kernel_size=transformer.conv_in.kernel_size,
-        stride=transformer.conv_in.stride,
-        padding=transformer.conv_in.padding,
+    old_proj = transformer.patch_embed.proj
+    new_proj = torch.nn.Conv2d(
+        old_proj.in_channels + 1,  # Add mask channel
+        old_proj.out_channels,
+        kernel_size=old_proj.kernel_size,
+        stride=old_proj.stride,
+        padding=old_proj.padding,
     )
-    # Initialize new conv with weights from old conv for RGB channels
-    with torch.no_grad():
-        transformer.conv_in.weight[:, :3] = old_conv.weight
-        transformer.conv_in.weight[:, 3:] = 0  # Initialize mask channels to 0
-        transformer.conv_in.bias = torch.nn.Parameter(old_conv.bias.clone())
     
+    # Initialize new weights
+    with torch.no_grad():
+        new_proj.weight[:, :3] = old_proj.weight
+        new_proj.weight[:, 3:] = 0  # Initialize mask channel to 0
+        new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
+    
+    # Replace the projection layer
+    transformer.patch_embed.proj = new_proj
+
     # Freeze VAE
     vae.requires_grad_(False)
     
@@ -541,7 +544,7 @@ def main(args):
                     for start_idx in range(0, total_frames - args.chunk_size + 1, 
                                          args.chunk_size - args.overlap):
                         # Process chunk with mixed precision
-                        with autocast(enabled=args.mixed_precision == "fp16"):
+                        with torch.amp.autocast('cuda', enabled=accelerator.mixed_precision == "fp16"):
                             # Get and pad chunk
                             chunk_rgb = batch["rgb"][:, start_idx:start_idx + args.chunk_size]
                             chunk_mask = batch["mask"][:, start_idx:start_idx + args.chunk_size]
@@ -566,11 +569,19 @@ def main(args):
                             # Model forward pass
                             noisy_latents = pipeline.scheduler.add_noise(gt_latents, noise, timesteps)
                             model_input = torch.cat([noisy_latents, mask], dim=2)
+                            batch_size = model_input.shape[0]
+                            timesteps = timesteps.expand(batch_size)
+                            encoder_hidden_states = torch.randn(
+                                batch_size, 
+                                args.chunk_size, 
+                                transformer.config.cross_attention_dim,
+                                device=accelerator.device,
+                            )
                             noise_pred = transformer(
                                 sample=model_input,
+                                encoder_hidden_states=encoder_hidden_states,
                                 timestep=timesteps,
-                                return_dict=False,
-                            )[0]
+                            )
                             
                             # Remove padding
                             noise_pred = unpad(noise_pred, (rgb_pad[0]//8, rgb_pad[1]//8))
