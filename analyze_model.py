@@ -326,69 +326,67 @@ def analyze_transformer(transformer):
 
 def analyze_scheduler(scheduler):
     """Analyze scheduler configuration."""
+    print("\nAnalyzing Scheduler architecture...")
     logger.info("\n=== Scheduler Analysis ===")
     
     # Basic config
+    print("Checking basic configuration...")
     logger.info("\nBasic Configuration:")
     logger.info(f"Scheduler Config: {scheduler.config}")
-    logger.info(f"Prediction type: {scheduler.config.prediction_type}")
-    logger.info(f"Beta schedule: {scheduler.config.beta_schedule}")
-    logger.info(f"Num train timesteps: {scheduler.config.num_train_timesteps}")
     
-    # Analyze beta schedule
-    logger.info("\nBeta Schedule Analysis:")
-    logger.info(f"Beta start: {scheduler.config.beta_start}")
-    logger.info(f"Beta end: {scheduler.config.beta_end}")
-    if hasattr(scheduler, 'betas'):
-        betas = scheduler.betas
-        logger.info(f"Beta schedule shape: {betas.shape}")
-        logger.info(f"Beta min: {betas.min().item():.6f}")
-        logger.info(f"Beta max: {betas.max().item():.6f}")
-        logger.info(f"Beta mean: {betas.mean().item():.6f}")
+    # Print all available config attributes
+    print("\nAvailable config attributes:")
+    for key, value in scheduler.config.items():
+        print(f"  {key}: {value}")
     
-    # Analyze alphas
-    if hasattr(scheduler, 'alphas_cumprod'):
-        logger.info("\nAlpha Analysis:")
-        alphas_cumprod = scheduler.alphas_cumprod
-        logger.info(f"Alphas cumprod shape: {alphas_cumprod.shape}")
-        logger.info(f"Alphas cumprod min: {alphas_cumprod.min().item():.6f}")
-        logger.info(f"Alphas cumprod max: {alphas_cumprod.max().item():.6f}")
-        logger.info(f"Alphas cumprod mean: {alphas_cumprod.mean().item():.6f}")
-    
-    # Test noise addition
-    logger.info("\nTesting Noise Addition:")
-    B, T, C, H, W = 1, 5, 3, 64, 64
-    test_input = torch.randn(B, C, T, H, W)  # Try [B, C, T, H, W] format
-    noise = torch.randn_like(test_input)
-    timesteps = torch.zeros(B, dtype=torch.long)
+    # Test scheduler step
+    print("\nTesting scheduler step...")
+    logger.info("\nTesting Scheduler Step:")
     
     try:
-        noisy = scheduler.add_noise(test_input, noise, timesteps)
-        logger.info(f"Input shape: {test_input.shape}")
-        logger.info(f"Noisy output shape: {noisy.shape}")
+        # Create test inputs
+        B, C, T, H, W = 1, 16, 5, 32, 32
+        sample = torch.randn(B, C, T, H, W)
+        timestep = torch.tensor([999])  # High timestep for more noise
+        timestep_back = torch.tensor([998])  # Previous timestep
+        
+        print(f"Created test inputs:")
+        print(f"  Sample shape: {sample.shape}")
+        print(f"  Timestep: {timestep.item()}")
+        print(f"  Timestep back: {timestep_back.item()}")
+        
+        # Test scheduler step
+        output = scheduler.step(
+            model_output=sample,  # Use same shape as input for simplicity
+            timestep=timestep,
+            timestep_back=timestep_back,
+            sample=sample,
+        )
+        
+        if hasattr(output, 'prev_sample'):
+            output_sample = output.prev_sample
+        else:
+            output_sample = output
+            
+        print(f"Output shape: {output_sample.shape}")
+        
+        # Verify shapes match
+        if output_sample.shape != sample.shape:
+            print(f"WARNING: Output shape {output_sample.shape} doesn't match input shape {sample.shape}")
+        
+        # Check noise schedule
+        print("\nAnalyzing noise schedule...")
+        timesteps = scheduler.timesteps
+        if hasattr(scheduler, 'alphas_cumprod'):
+            alphas = scheduler.alphas_cumprod
+            print(f"Number of diffusion steps: {len(timesteps)}")
+            print(f"Alpha values range: [{alphas.min().item():.4f}, {alphas.max().item():.4f}]")
+        
     except Exception as e:
-        logger.error(f"First format failed: {e}")
-        # Try alternative format
-        test_input_alt = test_input.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
-        noise_alt = noise.permute(0, 2, 1, 3, 4)
-        noisy = scheduler.add_noise(test_input_alt, noise_alt, timesteps)
-        logger.info(f"Alternative input shape: {test_input_alt.shape}")
-        logger.info(f"Alternative noisy output shape: {noisy.shape}")
+        print(f"Scheduler test failed: {e}")
+        logger.error(f"Scheduler test failed: {e}")
     
-    # Test step function
-    logger.info("\nTesting Step Function:")
-    try:
-        model_output = torch.randn_like(test_input)
-        denoised = scheduler.step(model_output, timesteps[0], test_input)
-        logger.info(f"Step output type: {type(denoised)}")
-        logger.info(f"Prev sample shape: {denoised.prev_sample.shape}")
-    except Exception as e:
-        logger.error(f"Step function test failed: {e}")
-        model_output_alt = model_output.permute(0, 2, 1, 3, 4)
-        test_input_alt = test_input.permute(0, 2, 1, 3, 4)
-        denoised = scheduler.step(model_output_alt, timesteps[0], test_input_alt)
-        logger.info(f"Alternative step output type: {type(denoised)}")
-        logger.info(f"Alternative prev sample shape: {denoised.prev_sample.shape}")
+    print("\nScheduler analysis completed!")
 
 def main():
     """Analyze CogVideoX model components."""
