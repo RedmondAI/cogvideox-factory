@@ -584,5 +584,11 @@ def get_args():
     _get_optimizer_args(parser)
     _get_configuration_args(parser)
     _get_additional_args(parser)
+    parser.add_argument(
+        "--local_rank",
+        type=int,
+        default=-1,
+        help="Local rank for distributed training.",
+    )
 
     return parser.parse_args()
