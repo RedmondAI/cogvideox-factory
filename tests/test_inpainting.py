@@ -381,9 +381,10 @@ def test_model_modification():
     
     # Create model from pretrained weights
     model = CogVideoXTransformer3DModel.from_pretrained(
-        "THUDM/CogVideoX-2b",
+        "THUDM/CogVideoX-5b",  # Using 5b model for better quality
         subfolder="transformer",
         revision=None,
+        torch_dtype=torch.bfloat16,  # 5b model uses bfloat16
     )
     
     # Enable memory optimizations
@@ -393,6 +394,7 @@ def test_model_modification():
     
     # Enable gradient checkpointing
     model.gradient_checkpointing = True
+    model.config.gradient_checkpointing_steps = 2
     
     # Test memory optimizations
     assert model.gradient_checkpointing, "Gradient checkpointing not enabled in model"
@@ -409,7 +411,7 @@ def test_model_modification():
         kernel_size=old_proj.kernel_size,
         stride=old_proj.stride,
         padding=old_proj.padding,
-    )
+    ).to(dtype=torch.bfloat16)  # Match model precision
     
     # Initialize new weights
     with torch.no_grad():
@@ -421,12 +423,12 @@ def test_model_modification():
     model.patch_embed.proj = new_proj
     
     # Test forward pass with chunked input
-    batch_size, chunk_size = 1, 32
-    test_input = torch.randn(batch_size, chunk_size, 4, 64, 64)  # 4 channels (RGB + mask)
-    encoder_hidden_states = torch.randn(batch_size, chunk_size, model.config.hidden_size)  # Match model's hidden_size
+    batch_size, chunk_size = 1, 64  # Increased chunk size to match training
+    test_input = torch.randn(batch_size, chunk_size, 4, 64, 64, dtype=torch.bfloat16)  # 4 channels (RGB + mask)
+    encoder_hidden_states = torch.randn(batch_size, chunk_size, model.config.hidden_size, dtype=torch.bfloat16)
     timestep = torch.zeros(batch_size, dtype=torch.long)
     
-    with torch.amp.autocast('cuda', enabled=True):  # Test with mixed precision
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):  # Test with mixed precision
         output = model(
             test_input,
             encoder_hidden_states=encoder_hidden_states,
@@ -434,6 +436,7 @@ def test_model_modification():
         )
     
     assert output.shape == (batch_size, chunk_size, 3, 64, 64), f"Wrong output shape: {output.shape}"
+    assert output.dtype == torch.bfloat16, f"Wrong output dtype: {output.dtype}"
     print("Model modification tests passed!")
 
 def test_pipeline():
@@ -442,88 +445,54 @@ def test_pipeline():
     from diffusers import CogVideoXDPMScheduler, CogVideoXTransformer3DModel
     import shutil
     
-    # Create test data
-    test_dir = Path("assets/inpainting_test_pipeline")
-    if test_dir.exists():
-        shutil.rmtree(test_dir)
-    test_dir.mkdir(parents=True, exist_ok=True)
-    create_test_data(test_dir, sequence_name="sequence_000")
-    
-    # Create test dataset
-    from dataset import VideoInpaintingDataset
-    dataset = VideoInpaintingDataset(
-        data_root=str(test_dir),
-        split='train',
-        train_ratio=1.0,
-        val_ratio=0.0,
-        test_ratio=0.0,
-        max_num_frames=64,
-        height=720,
-        width=1280,
+    # Load models
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="vae",
+        torch_dtype=torch.bfloat16,
     )
     
-    # Create test model
-    model = CogVideoXTransformer3DModel(
-        in_channels=3,
-        out_channels=3,
-        num_layers=1,
-        num_attention_heads=1,
-        hidden_size=768,  # Use hidden_size instead of cross_attention_dim
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="transformer",
+        torch_dtype=torch.bfloat16,
     )
     
-    # Modify model for inpainting
-    old_proj = model.patch_embed.proj
-    new_proj = torch.nn.Conv2d(
-        old_proj.in_channels + 1,
-        old_proj.out_channels,
-        kernel_size=old_proj.kernel_size,
-        stride=old_proj.stride,
-        padding=old_proj.padding,
+    scheduler = CogVideoXDPMScheduler.from_pretrained(
+        "THUDM/CogVideoX-5b",
+        subfolder="scheduler"
     )
-    with torch.no_grad():
-        new_proj.weight[:, :3] = old_proj.weight
-        new_proj.weight[:, 3:] = 0
-        new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
-    model.patch_embed.proj = new_proj
     
-    # Create scheduler
-    scheduler = CogVideoXDPMScheduler()
-    
-    # Create pipeline with window processing
+    # Create pipeline with updated parameters
     pipeline = CogVideoXInpaintingPipeline(
-        vae=model,  # Using transformer as fake VAE for testing
-        transformer=model,
+        vae=vae,
+        transformer=transformer,
         scheduler=scheduler,
-        window_size=WINDOW_SIZE,
-        overlap=OVERLAP,
-        vae_precision="fp16",
-        max_resolution=MAX_RESOLUTION,
+        window_size=64,  # Larger window for better temporal consistency
+        overlap=16,      # 25% overlap
+        vae_precision="bf16",
+        max_resolution=2048,
     )
     
-    # Get test batch
-    batch = dataset[0]
-    rgb = batch["rgb"].unsqueeze(0)
-    mask = batch["mask"].unsqueeze(0)
+    # Enable memory optimizations
+    if hasattr(transformer.config, 'use_memory_efficient_attention'):
+        transformer.enable_xformers_memory_efficient_attention()
     
-    # Test pipeline processing
-    with torch.no_grad():
-        with torch.amp.autocast('cuda', enabled=True):
-            # Create encoder hidden states
-            encoder_hidden_states = torch.randn(rgb.shape[0], rgb.shape[1], 768)  # Match hidden_size
-            pipeline.transformer._encoder_hidden_states = encoder_hidden_states  # Set for pipeline use
-            
-            output = pipeline(
-                rgb_frames=rgb[:, :32],  # Test with smaller sequence for memory
-                mask_frames=mask[:, :32],
-                num_inference_steps=2,  # Small number for testing
-            )
+    # Test pipeline
+    test_input = torch.randn(1, 64, 3, 64, 64, dtype=torch.bfloat16)  # [B, T, C, H, W]
+    test_mask = torch.ones(1, 64, 1, 64, 64, dtype=torch.bfloat16)    # [B, T, 1, H, W]
+    test_mask[:, :, :, 16:48, 16:48] = 0  # Create a hole in the middle
     
-    assert output.shape == rgb[:, :32].shape, f"Expected shape {rgb[:, :32].shape}, got {output.shape}"
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        output = pipeline(
+            rgb_frames=test_input,
+            mask_frames=test_mask,
+            num_inference_steps=20,  # Reduced for testing
+        )
     
-    # Cleanup
-    shutil.rmtree(test_dir)
-    
-    print("Pipeline test passed!")
+    assert output.shape == test_input.shape, f"Wrong output shape: {output.shape}"
+    assert output.dtype == torch.bfloat16, f"Wrong output dtype: {output.dtype}"
+    print("Pipeline tests passed!")
 
 def test_error_handling():
     """Test error handling in pipeline."""
