@@ -1302,10 +1302,16 @@ def test_resolution_scaling():
             
             # Calculate expected chunk positions
             chunk_starts = []
+            chunk_boundaries = []
             for i in range(num_chunks):
                 start_w = max(0, i * effective_chunk - overlap)
                 chunk_starts.append(start_w)
+                if i > 0:  # Add boundary between this chunk and previous
+                    boundary = i * effective_chunk * 8  # Convert to pixel space
+                    if boundary < W * 8:  # Only if within image width
+                        chunk_boundaries.append(boundary)
             print(f"Chunk start positions: {chunk_starts}")
+            print(f"Chunk boundaries: {chunk_boundaries}")
         
         # Test encoding
         latents = pipeline.encode(
@@ -1328,26 +1334,34 @@ def test_resolution_scaling():
         assert decoded.shape[3:] == (H, W), "Spatial dimensions should match"
         
         # Test for visible seams in output (basic check)
-        if use_chunks:
+        if use_chunks and chunk_boundaries:
             print("\nChecking chunk boundaries:")
-            # Skip first chunk start (0) and convert others to pixel space
-            boundaries = [pos * 8 for pos in chunk_starts[1:] if pos < W]
             
-            for boundary in boundaries:
+            for boundary in chunk_boundaries:
                 # Check a window around the boundary
                 window_size = overlap // 2  # Half the overlap size
-                if boundary - window_size < 0 or boundary + window_size > W * 8:
-                    continue
-                    
-                # Get values around boundary
-                left_vals = decoded[..., boundary-window_size:boundary].float()
-                right_vals = decoded[..., boundary:boundary+window_size].float()
                 
-                # Calculate statistics
-                mean_diff = (right_vals.mean() - left_vals.mean()).abs().item()
-                max_diff = (right_vals - left_vals).abs().max().item()
+                # Ensure window is within bounds
+                left_start = max(0, boundary - window_size)
+                left_end = boundary
+                right_start = boundary
+                right_end = min(W * 8, boundary + window_size)
+                
+                if left_start >= left_end or right_start >= right_end:
+                    print(f"Skipping boundary {boundary} - insufficient window size")
+                    continue
+                
+                # Get values around boundary
+                left_vals = decoded[..., left_start:left_end].float()
+                right_vals = decoded[..., right_start:right_end].float()
+                
+                # Calculate statistics across all dimensions except the last
+                mean_diff = (right_vals.mean(dim=list(range(right_vals.ndim-1))) - 
+                           left_vals.mean(dim=list(range(left_vals.ndim-1)))).abs().mean().item()
+                max_diff = (right_vals - left_vals).abs().amax(dim=list(range(right_vals.ndim-1))).mean().item()
                 
                 print(f"Boundary {boundary}:")
+                print(f"  Window: [{left_start}:{left_end}] - [{right_start}:{right_end}]")
                 print(f"  Mean difference: {mean_diff:.6f}")
                 print(f"  Max difference: {max_diff:.6f}")
                 
