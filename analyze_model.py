@@ -86,42 +86,65 @@ def analyze_vae(vae):
             print("Attempting forward pass with [B, C, T, H, W] format...")
             start_time = time.time()
             
-            with timeout(10):  # 10 second timeout
-                encoded = vae.encode(test_input)
-                latents = encoded.latent_dist.sample()
-                decode_time = time.time()
-                print(f"Encoding took {decode_time - start_time:.2f} seconds")
-                print(f"Latent shape: {latents.shape}")
-                
-                decoded = vae.decode(latents)
-                print(f"Decoding took {time.time() - decode_time:.2f} seconds")
-                print(f"Output shape: {decoded.shape}")
-                
-        except TimeoutError as e:
-            print(f"Forward pass timed out: {e}")
-            print("This might indicate the model is running on CPU or experiencing memory issues")
-            raise
+            # Test encoding
+            encoded = vae.encode(test_input)
+            latents = encoded.latent_dist.sample()
+            decode_time = time.time()
+            print(f"Encoding took {decode_time - start_time:.2f} seconds")
+            print(f"Latent shape: {latents.shape}")
+            logger.info(f"Latent shape: {latents.shape}")
+            
+            # Test decoding
+            decoded = vae.decode(latents)
+            decode_end_time = time.time()
+            print(f"Decoding took {decode_end_time - decode_time:.2f} seconds")
+            
+            # Handle decoder output
+            if hasattr(decoded, 'sample'):
+                decoded_sample = decoded.sample
+            else:
+                decoded_sample = decoded
+            print(f"Output sample shape: {decoded_sample.shape}")
+            logger.info(f"Output sample shape: {decoded_sample.shape}")
+            
+            # Verify shapes
+            expected_output_shape = (B, C, T//vae.config.temporal_compression_ratio, H, W)
+            print(f"Expected output shape: {expected_output_shape}")
+            if decoded_sample.shape != expected_output_shape:
+                print(f"WARNING: Output shape {decoded_sample.shape} doesn't match expected shape {expected_output_shape}")
+            
         except Exception as e:
             print(f"First format failed: {e}")
             logger.error(f"Forward pass failed: {e}")
             
             # Try alternative format with smaller input
-            print("Trying alternative format [B, T, C, H, W] with smaller input...")
+            print("Trying alternative format with smaller input...")
             B, T, C, H, W = 1, 3, vae.config.in_channels, 32, 32  # Even smaller test
-            test_input_alt = torch.randn(B, T, C, H, W, device=vae.device, dtype=vae.dtype)
+            test_input_alt = torch.randn(B, C, T, H, W, device=vae.device, dtype=vae.dtype)
             print(f"Alternative input shape: {test_input_alt.shape}")
             
             start_time = time.time()
-            with timeout(10):  # 10 second timeout
-                encoded = vae.encode(test_input_alt)
-                latents = encoded.latent_dist.sample()
-                decode_time = time.time()
-                print(f"Alternative encoding took {decode_time - start_time:.2f} seconds")
-                print(f"Latent shape: {latents.shape}")
-                
-                decoded = vae.decode(latents)
-                print(f"Alternative decoding took {time.time() - decode_time:.2f} seconds")
-                print(f"Output shape: {decoded.shape}")
+            
+            # Test encoding
+            encoded = vae.encode(test_input_alt)
+            latents = encoded.latent_dist.sample()
+            decode_time = time.time()
+            print(f"Alternative encoding took {decode_time - start_time:.2f} seconds")
+            print(f"Latent shape: {latents.shape}")
+            logger.info(f"Alternative latent shape: {latents.shape}")
+            
+            # Test decoding
+            decoded = vae.decode(latents)
+            decode_end_time = time.time()
+            print(f"Alternative decoding took {decode_end_time - decode_time:.2f} seconds")
+            
+            # Handle decoder output
+            if hasattr(decoded, 'sample'):
+                decoded_sample = decoded.sample
+            else:
+                decoded_sample = decoded
+            print(f"Alternative output sample shape: {decoded_sample.shape}")
+            logger.info(f"Alternative output sample shape: {decoded_sample.shape}")
     
     # Memory analysis
     print("\nAnalyzing memory usage...")
@@ -135,8 +158,8 @@ def analyze_vae(vae):
     
     if torch.cuda.is_available():
         print("\nGPU Memory Usage:")
-        print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.1f} MB")
-        print(f"Cached: {torch.cuda.memory_reserved() / 1024**2:.1f} MB")
+        print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.1f}MB")
+        print(f"Cached: {torch.cuda.memory_reserved() / 1024**2:.1f}MB")
     
     print("VAE analysis completed!")
     return vae.config.latent_channels
