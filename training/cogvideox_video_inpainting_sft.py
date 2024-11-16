@@ -744,11 +744,18 @@ def train_loop(
                 ).to(dtype=model_dtype)  # Match model dtype
                 noisy_frames = noise_scheduler.add_noise(clean_frames, noise, timesteps)
                 
+                # Create empty encoder hidden states (no text conditioning during training)
+                encoder_hidden_states = torch.zeros(
+                    clean_frames.shape[0], 1, 4096,
+                    device=clean_frames.device,
+                    dtype=model_dtype
+                )
+                
                 # Get model prediction
                 noise_pred = model(
                     hidden_states=noisy_frames,
                     timestep=timesteps,
-                    encoder_hidden_states=None,  # No text conditioning during training
+                    encoder_hidden_states=encoder_hidden_states,
                 ).sample
                 
                 # Compute loss

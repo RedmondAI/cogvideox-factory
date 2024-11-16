@@ -1618,16 +1618,20 @@ def test_training_components():
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
     
     # Test noise addition
-    clean_frames = torch.randn(2, 3, 8, 64, 64, device=device, dtype=torch.float16)
+    batch_size = 2
+    clean_frames = torch.randn(batch_size, 3, 8, 64, 64, device=device, dtype=torch.float16)
     noise = torch.randn_like(clean_frames)
-    timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (2,), device=device)
+    timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
     noisy_frames = scheduler.add_noise(clean_frames, noise, timesteps)
+    
+    # Create dummy encoder hidden states (same shape as text embeddings)
+    encoder_hidden_states = torch.zeros(batch_size, 1, 4096, device=device, dtype=torch.float16)
     
     # Test model forward pass
     noise_pred = model(
         hidden_states=noisy_frames,
         timestep=timesteps.to(dtype=torch.float16),  # Match model dtype
-        encoder_hidden_states=None,
+        encoder_hidden_states=encoder_hidden_states,  # Add encoder hidden states
     ).sample
     
     assert noise_pred.shape == noise.shape
