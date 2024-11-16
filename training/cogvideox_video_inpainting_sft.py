@@ -906,9 +906,6 @@ def train_loop(
                 # Convert to [B, T, C, H, W] format for transformer
                 clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
                 
-                # Create position IDs for rotary embeddings
-                position_ids = torch.arange(clean_frames.shape[1], device=clean_frames.device)
-                
                 # Apply patch embedding
                 B, T, C, H, W = clean_frames.shape
                 clean_frames = model.patch_embed.proj(clean_frames.reshape(-1, C, H, W))  # [B*T, 3072, H//2, W//2]
@@ -943,12 +940,11 @@ def train_loop(
                     dtype=model_dtype
                 )
                 
-                # Get model prediction with position IDs
+                # Get model prediction
                 noise_pred = model(
                     hidden_states=noisy_frames,
                     timestep=timesteps,
                     encoder_hidden_states=encoder_hidden_states,
-                    position_ids=position_ids,
                 ).sample
                 
                 # Verify no NaN values from activations or normalization
