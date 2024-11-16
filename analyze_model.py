@@ -344,13 +344,20 @@ def analyze_scheduler(scheduler):
     logger.info("\nTesting Scheduler Step:")
     
     try:
+        # Set inference steps
+        num_inference_steps = 50
+        scheduler.set_timesteps(num_inference_steps)
+        print(f"Set {num_inference_steps} inference steps")
+        
         # Create test inputs
         B, C, T, H, W = 1, 16, 5, 32, 32
         sample = torch.randn(B, C, T, H, W)
         model_output = torch.randn_like(sample)  # Predicted noise or x0
         old_pred_original_sample = torch.randn_like(sample)  # Previous prediction
-        timestep = torch.tensor([999])  # High timestep for more noise
-        timestep_back = torch.tensor([998])  # Previous timestep
+        
+        # Get actual timesteps from scheduler
+        timestep = scheduler.timesteps[0]  # First step (most noisy)
+        timestep_back = scheduler.timesteps[1]  # Next step
         
         print(f"Created test inputs:")
         print(f"  Sample shape: {sample.shape}")
@@ -383,14 +390,23 @@ def analyze_scheduler(scheduler):
         print("\nAnalyzing noise schedule...")
         if hasattr(scheduler, 'betas'):
             betas = scheduler.betas
-            print(f"Number of diffusion steps: {len(betas)}")
+            print(f"Number of training steps: {len(betas)}")
             print(f"Beta range: [{betas.min().item():.6f}, {betas.max().item():.6f}]")
             print(f"Beta schedule type: {scheduler.config.beta_schedule}")
         
         if hasattr(scheduler, 'alphas_cumprod'):
             alphas = scheduler.alphas_cumprod
             print(f"Alpha range: [{alphas.min().item():.6f}, {alphas.max().item():.6f}]")
-            print(f"SNR range: [{(-10 * torch.log10(1/alphas - 1)).min().item():.1f}dB, {(-10 * torch.log10(1/alphas - 1)).max().item():.1f}dB]")
+            snr_db = -10 * torch.log10(1/alphas - 1)
+            print(f"SNR range: [{snr_db.min().item():.1f}dB, {snr_db.max().item():.1f}dB]")
+            
+            # Print inference schedule details
+            print("\nInference schedule details:")
+            print(f"Number of inference steps: {num_inference_steps}")
+            print(f"Timestep spacing: {scheduler.config.timestep_spacing}")
+            print(f"Steps offset: {scheduler.config.steps_offset}")
+            if hasattr(scheduler, 'timesteps'):
+                print(f"Actual timesteps: {scheduler.timesteps.tolist()}")
         
     except Exception as e:
         print(f"Scheduler test failed: {e}")
