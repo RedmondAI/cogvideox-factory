@@ -199,6 +199,9 @@ def analyze_transformer(transformer):
         "text_embed_dim": config.get("text_embed_dim"),
         "time_embed_dim": config.get("time_embed_dim"),
         "temporal_compression_ratio": config.get("temporal_compression_ratio"),
+        "sample_frames": config.get("sample_frames"),
+        "sample_height": config.get("sample_height"),
+        "sample_width": config.get("sample_width"),
     }
     
     for key, value in architecture_details.items():
@@ -244,9 +247,9 @@ def analyze_transformer(transformer):
     test_input = torch.randn(B, T, C, H, W, device=transformer.device, dtype=transformer.dtype)
     timesteps = torch.zeros(B, dtype=torch.long, device=transformer.device)
     
-    # Create encoder hidden states based on text_embed_dim
+    # Create encoder hidden states (sequence length should be 1 for conditioning)
     text_embed_dim = config.get("text_embed_dim", 4096)
-    encoder_hidden_states = torch.randn(B, T, text_embed_dim, device=transformer.device, dtype=transformer.dtype)
+    encoder_hidden_states = torch.randn(B, 1, text_embed_dim, device=transformer.device, dtype=transformer.dtype)
     
     print(f"Created test inputs:")
     print(f"  Input shape: {test_input.shape}")
@@ -264,22 +267,26 @@ def analyze_transformer(transformer):
             end_time = time.time()
             print(f"Forward pass took {end_time - start_time:.2f} seconds")
             
-            if isinstance(output, tuple):
-                output = output[0]
+            # Handle transformer output
+            if hasattr(output, 'sample'):
+                output_sample = output.sample
+            else:
+                output_sample = output[0] if isinstance(output, tuple) else output
+            
             logger.info(f"Input shape: {test_input.shape}")
-            logger.info(f"Output shape: {output.shape}")
-            print(f"Output shape: {output.shape}")
+            logger.info(f"Output shape: {output_sample.shape}")
+            print(f"Output shape: {output_sample.shape}")
             
             # Verify output shape matches input shape
-            if output.shape != test_input.shape:
-                print(f"WARNING: Output shape {output.shape} doesn't match input shape {test_input.shape}")
+            if output_sample.shape != test_input.shape:
+                print(f"WARNING: Output shape {output_sample.shape} doesn't match input shape {test_input.shape}")
             
         except Exception as e:
             print(f"First format failed: {e}")
             logger.error(f"Forward pass failed: {e}")
             # Try alternative format
             print("Trying alternative format [B, C, T, H, W]...")
-            test_input_alt = test_input.permute(0, 2, 1, 3, 4)  # Try different permutation
+            test_input_alt = test_input.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W] -> [B, C, T, H, W]
             logger.info(f"Trying alternative input shape: {test_input_alt.shape}")
             start_time = time.time()
             output = transformer(
@@ -290,10 +297,14 @@ def analyze_transformer(transformer):
             end_time = time.time()
             print(f"Alternative forward pass took {end_time - start_time:.2f} seconds")
             
-            if isinstance(output, tuple):
-                output = output[0]
-            logger.info(f"Output shape: {output.shape}")
-            print(f"Alternative output shape: {output.shape}")
+            # Handle transformer output
+            if hasattr(output, 'sample'):
+                output_sample = output.sample
+            else:
+                output_sample = output[0] if isinstance(output, tuple) else output
+                
+            logger.info(f"Output shape: {output_sample.shape}")
+            print(f"Alternative output shape: {output_sample.shape}")
     
     # Memory analysis
     print("\nAnalyzing memory usage...")
