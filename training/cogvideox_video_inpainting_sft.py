@@ -918,7 +918,9 @@ def train_loop(
                 clean_frames = clean_frames.reshape(B, T, C_latent, H_latent, W_latent)
                 
                 # Apply layer normalization to hidden states
+                clean_frames = clean_frames.permute(0, 1, 3, 4, 2).reshape(-1, C_latent)
                 clean_frames = hidden_norm(clean_frames)
+                clean_frames = clean_frames.reshape(B, T, H_latent, W_latent, C_latent).permute(0, 1, 4, 2, 3)
                 
                 # Convert to [B, C, T, H, W] for scheduler operations
                 clean_frames_scheduler = clean_frames.permute(0, 2, 1, 3, 4)

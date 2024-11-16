@@ -129,7 +129,11 @@ def test_training_components():
         model.device,
         torch.float16
     )
+    # Reshape for layer norm [B*T*H*W, C]
+    noisy_frames = noisy_frames.permute(0, 1, 3, 4, 2).reshape(-1, C_latent)
     noisy_frames = hidden_norm(noisy_frames)
+    # Reshape back to [B, T, C, H, W]
+    noisy_frames = noisy_frames.reshape(B, T, H_latent, W_latent, C_latent).permute(0, 1, 4, 2, 3)
     
     # Create dummy encoder hidden states
     encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
