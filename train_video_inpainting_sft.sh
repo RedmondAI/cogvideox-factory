@@ -36,8 +36,8 @@ USE_FLASH_ATTENTION=true
 GRADIENT_CHECKPOINTING="--gradient_checkpointing"  # Fixed flag
 VAE_PRECISION="bf16"  # Changed to match mixed precision setting
 ENABLE_MODEL_CPU_OFFLOAD="--enable_model_cpu_offload"  # Fixed flag
-ENABLE_SLICING=true
-ENABLE_TILING=true
+ENABLE_SLICING="--enable_slicing"  # Fixed flag
+ENABLE_TILING="--enable_tiling"  # Fixed flag
 
 # Performance settings
 NUM_WORKERS=8
@@ -121,8 +121,8 @@ deepspeed --include localhost:0,1,2,3,4,5,6,7 \
   $GRADIENT_CHECKPOINTING \
   --vae_precision=$VAE_PRECISION \
   $ENABLE_MODEL_CPU_OFFLOAD \
-  --enable_slicing=$ENABLE_SLICING \
-  --enable_tiling=$ENABLE_TILING \
+  $ENABLE_SLICING \
+  $ENABLE_TILING \
   --allow_tf32 \
   --report_to=wandb \
   --dataloader_num_workers=$NUM_WORKERS \
