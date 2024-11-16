@@ -399,50 +399,27 @@ def test_model_modification():
     assert model.gradient_checkpointing, "Gradient checkpointing not enabled in model"
     assert hasattr(model, 'gradient_checkpointing'), "Model doesn't support gradient checkpointing"
     
-    # Print model structure to debug
-    print("\nModel structure:")
-    for name, module in model.named_modules():
-        print(f"{name}: {type(module).__name__}")
+    # Get the input projection layer from patch embedding
+    old_proj = model.patch_embed.proj
+    assert isinstance(old_proj, nn.Conv2d), "Expected Conv2d for patch embedding projection"
     
-    # Print model attributes
-    print("\nModel attributes:")
-    for attr in dir(model):
-        if not attr.startswith('_'):
-            print(attr)
-    
-    # Get the first conv layer in down blocks
-    conv_in = None
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Conv3d) and 'down_blocks' in name:
-            conv_in = module
-            print(f"\nUsing Conv3d layer: {name}")
-            break
-    
-    assert conv_in is not None, "Could not find input conv layer"
-    
-    # Create new conv with extra channel for mask
-    new_conv = nn.Conv3d(
-        conv_in.in_channels + 1,  # Add mask channel
-        conv_in.out_channels,
-        kernel_size=conv_in.kernel_size,
-        stride=conv_in.stride,
-        padding=conv_in.padding,
+    # Create new projection with extra channel for mask
+    new_proj = nn.Conv2d(
+        old_proj.in_channels + 1,  # Add mask channel
+        old_proj.out_channels,
+        kernel_size=old_proj.kernel_size,
+        stride=old_proj.stride,
+        padding=old_proj.padding,
     )
     
     # Initialize new weights
     with torch.no_grad():
-        new_conv.weight[:, :3] = conv_in.weight
-        new_conv.weight[:, 3:] = 0  # Initialize mask channel to 0
-        new_conv.bias = nn.Parameter(conv_in.bias.clone())
+        new_proj.weight[:, :3] = old_proj.weight
+        new_proj.weight[:, 3:] = 0  # Initialize mask channel to 0
+        new_proj.bias = nn.Parameter(old_proj.bias.clone())
     
-    # Replace the conv layer
-    for name, module in model.named_modules():
-        if module is conv_in:
-            parent_name = '.'.join(name.split('.')[:-1])
-            layer_name = name.split('.')[-1]
-            parent = model if not parent_name else getattr(model, parent_name)
-            setattr(parent, layer_name, new_conv)
-            break
+    # Replace the projection layer
+    model.patch_embed.proj = new_proj
     
     # Test forward pass with chunked input
     batch_size, chunk_size = 1, 32
