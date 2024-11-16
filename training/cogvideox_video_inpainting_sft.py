@@ -1028,17 +1028,17 @@ def main(args):
         optimizer = bnb.optim.AdamW8bit(
             pipeline.transformer.parameters(),
             lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
+            betas=(args.beta1, args.beta2),
+            weight_decay=args.weight_decay,
+            eps=args.epsilon,
         )
     else:
         optimizer = torch.optim.AdamW(
             pipeline.transformer.parameters(),
             lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
+            betas=(args.beta1, args.beta2),
+            weight_decay=args.weight_decay,
+            eps=args.epsilon,
         )
     
     # Scheduler
