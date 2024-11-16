@@ -1633,10 +1633,9 @@ def test_training_components():
     height = model.config.sample_height      # 60 pixels
     width = model.config.sample_width        # 90 pixels
     
-    # VAE has 2.5x temporal compression and 8x spatial
-    vae_temporal_ratio = 2.5
+    # VAE has fixed 8-frame output and 8x spatial downsampling
     vae_spatial_ratio = 8
-    target_frames = int(num_frames * vae_temporal_ratio)
+    target_frames = num_frames  # Use original frame count
     
     # Start with RGB frames [B, C, T, H, W]
     clean_frames = torch.randn(
@@ -1650,8 +1649,9 @@ def test_training_components():
     latent = vae.encode(clean_frames).latent_dist.sample()
     decoded = vae.decode(latent).sample  # Access .sample attribute
     
-    # Handle potential temporal expansion
-    if decoded.shape[2] > clean_frames.shape[2]:
+    # Handle fixed 8-frame output from VAE
+    if decoded.shape[2] != clean_frames.shape[2]:
+        # Take center frames if output is expanded
         start_idx = (decoded.shape[2] - clean_frames.shape[2]) // 2
         decoded = decoded[:, :, start_idx:start_idx + clean_frames.shape[2]]
     
@@ -1801,10 +1801,9 @@ def test_training_components():
     height = model.config.sample_height      # 60 pixels
     width = model.config.sample_width        # 90 pixels
     
-    # VAE has 2.5x temporal compression and 8x spatial
-    vae_temporal_ratio = 2.5
+    # VAE has fixed 8-frame output and 8x spatial downsampling
     vae_spatial_ratio = 8
-    target_frames = int(num_frames * vae_temporal_ratio)
+    target_frames = num_frames  # Use original frame count
     
     # Start with RGB frames [B, C, T, H, W]
     clean_frames = torch.randn(
@@ -1818,8 +1817,9 @@ def test_training_components():
     latent = vae.encode(clean_frames).latent_dist.sample()
     decoded = vae.decode(latent).sample  # Access .sample attribute
     
-    # Handle potential temporal expansion
-    if decoded.shape[2] > clean_frames.shape[2]:
+    # Handle fixed 8-frame output from VAE
+    if decoded.shape[2] != clean_frames.shape[2]:
+        # Take center frames if output is expanded
         start_idx = (decoded.shape[2] - clean_frames.shape[2]) // 2
         decoded = decoded[:, :, start_idx:start_idx + clean_frames.shape[2]]
     
@@ -1978,10 +1978,9 @@ def test_training_components():
     height = model.config.sample_height      # 60 pixels
     width = model.config.sample_width        # 90 pixels
     
-    # VAE has 2.5x temporal compression and 8x spatial
-    vae_temporal_ratio = 2.5
+    # VAE has fixed 8-frame output and 8x spatial downsampling
     vae_spatial_ratio = 8
-    target_frames = int(num_frames * vae_temporal_ratio)
+    target_frames = num_frames  # Use original frame count
     
     # Start with RGB frames [B, C, T, H, W]
     clean_frames = torch.randn(
@@ -2145,10 +2144,9 @@ def test_training_components():
     height = model.config.sample_height      # 60 pixels
     width = model.config.sample_width        # 90 pixels
     
-    # VAE has 2.5x temporal compression and 8x spatial
-    vae_temporal_ratio = 2.5
+    # VAE has fixed 8-frame output and 8x spatial downsampling
     vae_spatial_ratio = 8
-    target_frames = int(num_frames * vae_temporal_ratio)
+    target_frames = num_frames  # Use original frame count
     
     # Start with RGB frames [B, C, T, H, W]
     clean_frames = torch.randn(
@@ -2376,10 +2374,9 @@ def test_training_components():
     height = model.config.sample_height      # 60 pixels
     width = model.config.sample_width        # 90 pixels
     
-    # VAE has 2.5x temporal compression and 8x spatial
-    vae_temporal_ratio = 2.5
+    # VAE has fixed 8-frame output and 8x spatial downsampling
     vae_spatial_ratio = 8
-    target_frames = int(num_frames * vae_temporal_ratio)
+    target_frames = num_frames  # Use original frame count
     
     # Start with RGB frames [B, C, T, H, W]
     clean_frames = torch.randn(
@@ -2509,10 +2506,9 @@ def test_training_components():
     height = model.config.sample_height      # 60 pixels
     width = model.config.sample_width        # 90 pixels
     
-    # VAE has 2.5x temporal compression and 8x spatial
-    vae_temporal_ratio = 2.5
+    # VAE has fixed 8-frame output and 8x spatial downsampling
     vae_spatial_ratio = 8
-    target_frames = int(num_frames * vae_temporal_ratio)
+    target_frames = num_frames  # Use original frame count
     
     # Start with RGB frames [B, C, T, H, W]
     clean_frames = torch.randn(
@@ -2526,8 +2522,9 @@ def test_training_components():
     latent = vae.encode(clean_frames).latent_dist.sample()
     decoded = vae.decode(latent).sample  # Access .sample attribute
     
-    # Handle potential temporal expansion
-    if decoded.shape[2] > clean_frames.shape[2]:
+    # Handle fixed 8-frame output from VAE
+    if decoded.shape[2] != clean_frames.shape[2]:
+        # Take center frames if output is expanded
         start_idx = (decoded.shape[2] - clean_frames.shape[2]) // 2
         decoded = decoded[:, :, start_idx:start_idx + clean_frames.shape[2]]
     
@@ -2677,10 +2674,9 @@ def test_training_components():
     height = model.config.sample_height      # 60 pixels
     width = model.config.sample_width        # 90 pixels
     
-    # VAE has 2.5x temporal compression and 8x spatial
-    vae_temporal_ratio = 2.5
+    # VAE has fixed 8-frame output and 8x spatial downsampling
     vae_spatial_ratio = 8
-    target_frames = int(num_frames * vae_temporal_ratio)
+    target_frames = num_frames  # Use original frame count
     
     # Start with RGB frames [B, C, T, H, W]
     clean_frames = torch.randn(
@@ -2694,8 +2690,9 @@ def test_training_components():
     latent = vae.encode(clean_frames).latent_dist.sample()
     decoded = vae.decode(latent).sample  # Access .sample attribute
     
-    # Handle potential temporal expansion
-    if decoded.shape[2] > clean_frames.shape[2]:
+    # Handle fixed 8-frame output from VAE
+    if decoded.shape[2] != clean_frames.shape[2]:
+        # Take center frames if output is expanded
         start_idx = (decoded.shape[2] - clean_frames.shape[2]) // 2
         decoded = decoded[:, :, start_idx:start_idx + clean_frames.shape[2]]
     
