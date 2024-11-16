@@ -399,11 +399,18 @@ def test_model_modification():
     assert model.gradient_checkpointing, "Gradient checkpointing not enabled in model"
     assert hasattr(model, 'gradient_checkpointing'), "Model doesn't support gradient checkpointing"
     
-    # Get the first conv layer
-    conv_in = None
-    for module in model.modules():
+    # Print model structure to debug
+    print("\nModel structure:")
+    for name, module in model.named_modules():
         if isinstance(module, nn.Conv3d):
+            print(f"Found Conv3d layer at {name}: {module}")
+    
+    # Get the first conv layer in conv_in_blocks
+    conv_in = None
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv3d) and 'conv_in_blocks' in name:
             conv_in = module
+            print(f"\nUsing Conv3d layer: {name}")
             break
     
     assert conv_in is not None, "Could not find input conv layer"
