@@ -1179,6 +1179,12 @@ def main(args):
         collate_fn=collate_fn,
     )
     
+    # Calculate training steps
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+    args.num_warmup_steps = args.lr_warmup_steps * args.gradient_accumulation_steps
+    args.num_training_steps = args.max_train_steps * args.gradient_accumulation_steps
+    
     # Optimizer
     if args.use_8bit_adam:
         import bitsandbytes as bnb
@@ -1204,39 +1210,30 @@ def main(args):
     )
     
     # Get scheduler
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-    
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
-        num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
-        num_training_steps=max_train_steps * args.gradient_accumulation_steps,
+        num_warmup_steps=args.num_warmup_steps,
+        num_training_steps=args.num_training_steps,
     )
     
     # Store original configs
     pipeline._transformer_config = transformer.config
     pipeline._vae_config = vae.config
     
-    # Train!
+    # Initialize training state
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
-    
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
-    logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
-    logger.info(f"  Num Epochs = {args.num_train_epochs}")
+    logger.info(f"  Num epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
-    logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
+    logger.info(f"  Gradient accumulation steps = {args.gradient_accumulation_steps}")
+    logger.info(f"  Total optimization steps = {args.max_train_steps}")
+    logger.info(f"  Number of warmup steps = {args.num_warmup_steps}")
     
     global_step = 0
     first_epoch = 0
-    
-    progress_bar = tqdm(
-        range(global_step, args.max_train_steps),
-        disable=not accelerator.is_local_main_process,
-        desc="Steps",
-    )
     
     # Get validation data
     try:
@@ -1245,57 +1242,62 @@ def main(args):
         validation_data = None
         logger.warning("No validation data available")
     
+    # Training loop
     for epoch in range(first_epoch, args.num_train_epochs):
         pipeline.transformer.train()
-        epoch_metrics = defaultdict(float)
+        train_loss = 0.0
         
         for step, batch in enumerate(train_dataloader):
-            # Convert inputs to float
+            # Convert inputs to correct dtype
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(dtype=torch.float32 if not args.mixed_precision else (torch.float16 if args.mixed_precision == "fp16" else torch.bfloat16))
             
             with accelerator.accumulate(pipeline.transformer):
-                # Forward pass
-                with torch.amp.autocast('cuda', enabled=args.mixed_precision != "no"):
-                    loss = pipeline.training_step(batch)
+                loss = pipeline.training_step(batch)
+                accelerator.backward(loss)
                 
-                # Backward pass
-                if use_scaler:
-                    scaler.scale(loss).backward()
-                    if accelerator.sync_gradients:
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(pipeline.transformer.parameters(), 1.0)
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    loss.backward()
-                    if accelerator.sync_gradients:
-                        torch.nn.utils.clip_grad_norm_(pipeline.transformer.parameters(), 1.0)
-                    optimizer.step()
-                
-                optimizer.zero_grad()
-                lr_scheduler.step()
-            
-            if global_step % args.validation_steps == 0:
-                if accelerator.is_main_process:
-                    # Log metrics
-                    for k, v in epoch_metrics.items():
-                        wandb.log({f"train/{k}": v / step}, step=global_step)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(pipeline.transformer.parameters(), args.max_grad_norm)
                     
-                    pipeline.transformer = accelerator.unwrap_model(pipeline.transformer)
-                    log_validation(
-                        accelerator=accelerator,
-                        pipeline=pipeline,
-                        args=args,
-                        epoch=epoch,
-                        validation_data=validation_data,
-                    )
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
             
-            progress_bar.update(1)
-            global_step += 1
+            # Logging
+            if accelerator.sync_gradients:
+                progress_bar.update(1)
+                global_step += 1
+                train_loss += loss.detach().item()
+                
+                if global_step % args.logging_steps == 0:
+                    accelerator.log(
+                        {
+                            "train_loss": train_loss / args.logging_steps,
+                            "learning_rate": lr_scheduler.get_last_lr()[0],
+                            "epoch": epoch,
+                            "global_step": global_step,
+                        },
+                        step=global_step,
+                    )
+                    train_loss = 0.0
+                
+                if global_step % args.validation_steps == 0:
+                    if validation_data is not None:
+                        log_validation(accelerator, pipeline, args, epoch, validation_data)
+                
+                if global_step % args.checkpointing_steps == 0:
+                    if accelerator.is_main_process:
+                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        accelerator.save_state(save_path)
+                        
+                if global_step >= args.max_train_steps:
+                    break
     
-    accelerator.end_training()
+    # Save final model
+    if accelerator.is_main_process:
+        save_path = os.path.join(args.output_dir, "final_model")
+        accelerator.save_state(save_path)
 
 if __name__ == "__main__":
     import sys
