@@ -170,42 +170,52 @@ def compute_metrics(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor) ->
     
     return metrics
 
-def compute_loss(model_pred: torch.Tensor, noise: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def compute_loss(model_pred: torch.Tensor, noise: torch.Tensor, mask: torch.Tensor, latents: Optional[torch.Tensor] = None) -> torch.Tensor:
     """Compute the loss for video inpainting training.
     
     Args:
         model_pred: Model prediction tensor [B, T, C, H, W]
         noise: Target noise tensor [B, T, C, H, W]
         mask: Binary mask tensor [B, T, 1, H, W]
+        latents: Optional original latents for perceptual loss [B, T, C, H, W]
     
     Returns:
         Loss value as a scalar tensor
     """
-    # Compute MSE loss only in masked regions
-    masked_pred = model_pred * mask
-    masked_noise = noise * mask
-    
-    # Compute MSE loss
-    mse_loss = F.mse_loss(masked_pred, masked_noise, reduction='none')
+    # Compute MSE loss in masked regions
+    mse_loss = F.mse_loss(model_pred * mask, noise * mask, reduction='none')
     
     # Average over all dimensions except batch
     mse_loss = mse_loss.mean(dim=[1, 2, 3, 4])
     
-    # Add temporal consistency loss
-    if model_pred.shape[1] > 1:  # Only if we have more than 1 frame
+    # Add temporal consistency loss if sequence length > 1
+    if model_pred.shape[1] > 1:
+        # Compute temporal gradients
+        pred_grad = model_pred[:, 1:] - model_pred[:, :-1]
+        noise_grad = noise[:, 1:] - noise[:, :-1]
+        mask_grad = mask[:, 1:]  # Mask for gradient regions
+        
+        # Temporal consistency loss in masked regions
         temp_loss = F.mse_loss(
-            (model_pred[:, 1:] - model_pred[:, :-1]) * mask[:, 1:],
-            (noise[:, 1:] - noise[:, :-1]) * mask[:, 1:],
+            pred_grad * mask_grad,
+            noise_grad * mask_grad,
             reduction='none'
         ).mean(dim=[1, 2, 3, 4])
         
-        # Combine losses with weighting
-        loss = mse_loss + 0.1 * temp_loss  # Temporal consistency weight of 0.1
+        # Optional perceptual loss
+        if latents is not None and hasattr(F, 'cosine_similarity'):
+            pred_features = model_pred.flatten(2)
+            latent_features = latents.flatten(2)
+            perceptual_loss = (1 - F.cosine_similarity(pred_features, latent_features, dim=2)).mean()
+            
+            # Combine losses with weights
+            loss = mse_loss.mean() + 0.1 * temp_loss.mean() + 0.01 * perceptual_loss
+        else:
+            # Just MSE and temporal loss
+            loss = mse_loss.mean() + 0.1 * temp_loss.mean()
     else:
-        loss = mse_loss
-    
-    # Final reduction
-    loss = loss.mean()
+        # Single frame case - just MSE loss
+        loss = mse_loss.mean()
     
     return loss
 
@@ -398,6 +408,137 @@ def log_validation(
     pipeline.transformer.train()
     pipeline.vae.train()
 
+def train_loop(
+    config,
+    model,
+    noise_scheduler,
+    optimizer,
+    train_dataloader,
+    val_dataloader,
+    lr_scheduler,
+    accelerator,
+    start_global_step,
+    num_update_steps_per_epoch,
+    num_train_epochs,
+    gradient_accumulation_steps,
+    checkpoints_total_limit,
+):
+    # Initialize progress bar
+    progress_bar = tqdm(
+        range(start_global_step, num_update_steps_per_epoch * num_train_epochs),
+        disable=not accelerator.is_local_main_process,
+    )
+    progress_bar.set_description("Steps")
+    global_step = start_global_step
+    
+    # Training loop
+    for epoch in range(num_train_epochs):
+        model.train()
+        train_loss = 0.0
+        
+        for step, batch in enumerate(train_dataloader):
+            # Skip steps until we reach the resumed step
+            if start_global_step and global_step < start_global_step:
+                global_step += 1
+                continue
+                
+            with accelerator.accumulate(model):
+                # Get input tensors
+                clean_frames = batch["rgb"]
+                mask = batch["mask"]
+                
+                # Sample noise and add to frames
+                noise = torch.randn_like(clean_frames)
+                timesteps = torch.randint(
+                    0, noise_scheduler.config.num_train_timesteps, (clean_frames.shape[0],), 
+                    device=clean_frames.device
+                )
+                noisy_frames = noise_scheduler.add_noise(clean_frames, noise, timesteps)
+                
+                # Get model prediction
+                noise_pred = model(noisy_frames, mask, timesteps)
+                
+                # Compute loss
+                loss = compute_loss(noise_pred, noise, mask, clean_frames)
+                
+                # Backprop
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+            
+            # Checks if we should save checkpoint
+            if accelerator.sync_gradients:
+                if global_step % config.checkpointing_steps == 0:
+                    if accelerator.is_main_process:
+                        save_path = os.path.join(config.output_dir, f"checkpoint-{global_step}")
+                        accelerator.save_state(save_path)
+                        
+                        if checkpoints_total_limit is not None:
+                            checkpoints = os.listdir(config.output_dir)
+                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+                            
+                            # Remove old checkpoints
+                            if len(checkpoints) > checkpoints_total_limit:
+                                num_to_remove = len(checkpoints) - checkpoints_total_limit
+                                removing_checkpoints = checkpoints[0:num_to_remove]
+                                
+                                for removing_checkpoint in removing_checkpoints:
+                                    removing_path = os.path.join(config.output_dir, removing_checkpoint)
+                                    shutil.rmtree(removing_path)
+                
+                # Validation loop
+                if global_step % config.validation_steps == 0:
+                    model.eval()
+                    val_loss = 0.0
+                    with torch.no_grad():
+                        for val_step, val_batch in enumerate(val_dataloader):
+                            clean_frames = val_batch["rgb"] 
+                            mask = val_batch["mask"]
+                            
+                            noise = torch.randn_like(clean_frames)
+                            timesteps = torch.randint(
+                                0, noise_scheduler.config.num_train_timesteps, (clean_frames.shape[0],),
+                                device=clean_frames.device
+                            )
+                            noisy_frames = noise_scheduler.add_noise(clean_frames, noise, timesteps)
+                            
+                            noise_pred = model(noisy_frames, mask, timesteps)
+                            val_loss += compute_loss(noise_pred, noise, mask, clean_frames).item()
+                    
+                    val_loss /= len(val_dataloader)
+                    accelerator.log(
+                        {
+                            "val_loss": val_loss,
+                            "train_loss": loss.detach().item(),
+                            "step": global_step,
+                        },
+                        step=global_step,
+                    )
+                    model.train()
+            
+            progress_bar.update(1)
+            global_step += 1
+            
+            # Log metrics
+            accelerator.log(
+                {
+                    "train_loss": loss.detach().item(),
+                    "learning_rate": lr_scheduler.get_last_lr()[0],
+                    "epoch": epoch,
+                    "step": global_step,
+                },
+                step=global_step,
+            )
+    
+    # Save final model
+    if accelerator.is_main_process:
+        save_path = os.path.join(config.output_dir, "final_model")
+        accelerator.save_state(save_path)
+
 def main(args):
     logging_dir = os.path.join(args.output_dir, args.logging_dir)
     accelerator_project_config = ProjectConfiguration(
@@ -483,12 +624,37 @@ def main(args):
         max_resolution=args.max_resolution,
     )
     
-    # Enable memory efficient attention
+    # Configure scheduler for better inpainting
+    pipeline.scheduler.config.prediction_type = "v_prediction"  # Better for inpainting
+    pipeline.scheduler.config.num_train_timesteps = 1000
+    pipeline.scheduler.config.beta_schedule = "scaled_linear"
+    pipeline.scheduler.config.steps_offset = 1
+    pipeline.scheduler.config.clip_sample = False
+    
+    # Enable memory optimizations
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
             transformer.enable_xformers_memory_efficient_attention()
         else:
-            raise ValueError("xformers is not available. Make sure it is installed correctly")
+            logger.warning("xformers not available, falling back to standard attention")
+    
+    if args.gradient_checkpointing:
+        transformer.gradient_checkpointing_enable()
+        logger.info("Gradient checkpointing enabled")
+    
+    # Enable CPU offloading if specified
+    if args.use_cpu_offload and accelerator.is_main_process:
+        pipeline.enable_model_cpu_offload()
+        logger.info("Model CPU offloading enabled")
+    
+    # Enable slicing and tiling for memory efficiency
+    if args.enable_slicing:
+        pipeline.vae.enable_slicing()
+        logger.info("VAE slicing enabled")
+    
+    if args.enable_tiling:
+        pipeline.vae.enable_tiling()
+        logger.info("VAE tiling enabled")
     
     # Dataset and DataLoaders creation
     train_dataset = VideoInpaintingDataset(
@@ -640,7 +806,7 @@ def main(args):
                             noise = unpad(noise, (rgb_pad[0]//8, rgb_pad[1]//8))
                             
                             # Calculate loss
-                            loss = compute_loss(model_pred, noise, mask)
+                            loss = compute_loss(model_pred, noise, mask, chunk_gt)
                         
                         # Scale loss and backward pass
                         scaler.scale(loss).backward()

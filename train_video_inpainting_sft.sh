@@ -1,37 +1,40 @@
 #!/bin/bash
 
-# Default values for the script
-PRETRAINED_MODEL_NAME_OR_PATH="THUDM/CogVideoX-5b"  # Using 5b model for better quality outputs
-OUTPUT_DIR="video-inpainting-model"
-DATA_ROOT="/var/lib/docker/dataset/"
+# Model configuration
+PRETRAINED_MODEL_NAME_OR_PATH="THUDM/CogVideoX-5b"
+OUTPUT_DIR="./cogvideox-inpainting"
+DATA_ROOT="./data/inpainting"
 
-# Optimized batch parameters for 8x A100 80GB
-TRAIN_BATCH_SIZE=4  # Per-GPU batch size
-GRADIENT_ACCUMULATION_STEPS=1  # With 8 GPUs, effective batch size = 32
-MAX_NUM_FRAMES=100
+# Training hyperparameters
+TRAIN_BATCH_SIZE=1
+GRADIENT_ACCUMULATION_STEPS=4
+MAX_NUM_FRAMES=64
 NUM_TRAIN_EPOCHS=100
 LEARNING_RATE=1e-5
-LR_WARMUP_STEPS=100
-CHECKPOINTING_STEPS=500
-VALIDATION_STEPS=100
-MIXED_PRECISION="bf16"  # Using bfloat16 since CogVideoX-5b weights are stored in bf16
+LR_WARMUP_STEPS=1000
+CHECKPOINTING_STEPS=2000
+VALIDATION_STEPS=500
 
-# Memory and processing parameters optimized for 80GB A100s with NVLink
-WINDOW_SIZE=64       # Larger window size for better temporal consistency
-OVERLAP=16          # 25% overlap for smooth transitions
-CHUNK_SIZE=64       # Process more frames at once
-USE_8BIT_ADAM=true  # Memory efficient optimizer
+# Model settings
+MIXED_PRECISION="bf16"
+ENABLE_XFORMERS_MEMORY_EFFICIENT_ATTENTION=true
+RANDOM_FLIP_H=0.5
+RANDOM_FLIP_V=0.5
+WINDOW_SIZE=32
+OVERLAP=8
+CHUNK_SIZE=4
+
+# Memory optimizations
+USE_8BIT_ADAM=true
 USE_FLASH_ATTENTION=true
 GRADIENT_CHECKPOINTING=true
-VAE_PRECISION="bf16"
+VAE_PRECISION="fp32"
+USE_CPU_OFFLOAD=true
+ENABLE_SLICING=true
+ENABLE_TILING=true
 
-# Data augmentation parameters
-RANDOM_FLIP_H=0.5  # Horizontal flip augmentation
-RANDOM_FLIP_V=0.5  # Vertical flip augmentation
-
-# Performance optimization
-ENABLE_XFORMERS_MEMORY_EFFICIENT_ATTENTION=true
-NUM_WORKERS=8  # Dataloader workers per GPU
+# Performance settings
+NUM_WORKERS=8
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -82,7 +85,7 @@ done
 # Create output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
 
-# Run the training script with DeepSpeed ZeRO-3 optimization
+# Run training
 deepspeed --num_gpus=8 \
   training/cogvideox_video_inpainting_sft.py \
   --pretrained_model_name_or_path="$PRETRAINED_MODEL_NAME_OR_PATH" \
@@ -107,6 +110,9 @@ deepspeed --num_gpus=8 \
   --use_flash_attention=$USE_FLASH_ATTENTION \
   --gradient_checkpointing=$GRADIENT_CHECKPOINTING \
   --vae_precision="$VAE_PRECISION" \
+  --use_cpu_offload=$USE_CPU_OFFLOAD \
+  --enable_slicing=$ENABLE_SLICING \
+  --enable_tiling=$ENABLE_TILING \
   --allow_tf32 \
   --report_to="wandb" \
   --dataloader_num_workers=$NUM_WORKERS \
