@@ -520,6 +520,68 @@ class CogVideoXInpaintingPipeline:
         
         return mean_diff, max_diff
 
+    def training_step(self, batch):
+        """Training step for video inpainting.
+        
+        Args:
+            batch: Dictionary containing:
+                - rgb: Input video [B, C, T, H, W]
+                - mask: Binary mask [B, 1, T, H, W]
+                - gt: Ground truth video [B, C, T, H, W]
+        """
+        total_frames = batch["rgb"].shape[1]
+        chunk_losses = []
+        
+        for start_idx in range(0, total_frames - self.chunk_size + 1, 
+                             self.chunk_size - self.overlap):
+            # Get and pad chunk
+            chunk_rgb = batch["rgb"][:, start_idx:start_idx + self.chunk_size]
+            chunk_mask = batch["mask"][:, start_idx:start_idx + self.chunk_size]
+            chunk_gt = batch["gt"][:, start_idx:start_idx + self.chunk_size]
+            
+            chunk_rgb, rgb_pad = pad_to_multiple(chunk_rgb)
+            chunk_mask, _ = pad_to_multiple(chunk_mask)
+            chunk_gt, _ = pad_to_multiple(chunk_gt)
+            
+            # Process with VAE
+            rgb_latents = self.encode(chunk_rgb)
+            gt_latents = self.encode(chunk_gt)
+            
+            # Prepare mask and noise
+            mask = F.interpolate(chunk_mask, size=rgb_latents.shape[-2:])
+            noise = torch.randn_like(gt_latents)
+            timesteps = torch.randint(
+                0, self.scheduler.config.num_train_timesteps,
+                (chunk_rgb.shape[0],), device=chunk_rgb.device
+            )
+            
+            # Get encoder hidden states
+            encoder_hidden_states = torch.randn(
+                chunk_rgb.shape[0], 
+                self.chunk_size, 
+                self.transformer.config.hidden_size,
+                device=chunk_rgb.device,
+            )
+            
+            # Forward through transformer
+            model_pred = self.transformer(
+                hidden_states=torch.cat([gt_latents, mask], dim=2),
+                encoder_hidden_states=encoder_hidden_states,
+                timestep=timesteps,
+            ).sample
+            
+            # Remove padding
+            model_pred = unpad(model_pred, (rgb_pad[0]//8, rgb_pad[1]//8))
+            noise = unpad(noise, (rgb_pad[0]//8, rgb_pad[1]//8))
+            
+            # Calculate loss
+            loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+            chunk_losses.append(loss)
+            
+            torch.cuda.empty_cache()
+        
+        return torch.stack(chunk_losses).mean()
+
 def collate_fn(examples):
     rgb = torch.stack([example["rgb"] for example in examples])
     mask = torch.stack([example["mask"] for example in examples])
@@ -1105,7 +1167,7 @@ def main(args):
             
             with accelerator.accumulate(pipeline.transformer):
                 # Forward pass
-                with torch.cuda.amp.autocast(enabled=args.mixed_precision != "no"):
+                with torch.amp.autocast('cuda', enabled=args.mixed_precision != "no"):
                     loss = pipeline.training_step(batch)
                 
                 # Backward pass
