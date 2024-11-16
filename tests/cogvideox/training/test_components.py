@@ -7,6 +7,8 @@ from diffusers import (
     AutoencoderKLCogVideoX,
     CogVideoXDPMScheduler
 )
+from diffusers.utils.torch_utils import randn_tensor
+from ..utils import create_layer_norm
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -121,7 +123,12 @@ def test_training_components():
     noisy_frames = noisy_frames.reshape(B, T, C_latent, H_latent, W_latent)
     
     # Apply layer normalization to hidden states
-    hidden_norm = model.norm
+    hidden_norm = create_layer_norm(
+        model.config.hidden_size,
+        model.config,
+        model.device,
+        torch.float16
+    )
     noisy_frames = hidden_norm(noisy_frames)
     
     # Create dummy encoder hidden states
