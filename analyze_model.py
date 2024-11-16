@@ -347,20 +347,25 @@ def analyze_scheduler(scheduler):
         # Create test inputs
         B, C, T, H, W = 1, 16, 5, 32, 32
         sample = torch.randn(B, C, T, H, W)
+        model_output = torch.randn_like(sample)  # Predicted noise or x0
+        old_pred_original_sample = torch.randn_like(sample)  # Previous prediction
         timestep = torch.tensor([999])  # High timestep for more noise
         timestep_back = torch.tensor([998])  # Previous timestep
         
         print(f"Created test inputs:")
         print(f"  Sample shape: {sample.shape}")
+        print(f"  Model output shape: {model_output.shape}")
+        print(f"  Previous prediction shape: {old_pred_original_sample.shape}")
         print(f"  Timestep: {timestep.item()}")
         print(f"  Timestep back: {timestep_back.item()}")
         
         # Test scheduler step
         output = scheduler.step(
-            model_output=sample,  # Use same shape as input for simplicity
+            model_output=model_output,
             timestep=timestep,
             timestep_back=timestep_back,
             sample=sample,
+            old_pred_original_sample=old_pred_original_sample,
         )
         
         if hasattr(output, 'prev_sample'):
@@ -374,13 +379,18 @@ def analyze_scheduler(scheduler):
         if output_sample.shape != sample.shape:
             print(f"WARNING: Output shape {output_sample.shape} doesn't match input shape {sample.shape}")
         
-        # Check noise schedule
+        # Analyze noise schedule
         print("\nAnalyzing noise schedule...")
-        timesteps = scheduler.timesteps
+        if hasattr(scheduler, 'betas'):
+            betas = scheduler.betas
+            print(f"Number of diffusion steps: {len(betas)}")
+            print(f"Beta range: [{betas.min().item():.6f}, {betas.max().item():.6f}]")
+            print(f"Beta schedule type: {scheduler.config.beta_schedule}")
+        
         if hasattr(scheduler, 'alphas_cumprod'):
             alphas = scheduler.alphas_cumprod
-            print(f"Number of diffusion steps: {len(timesteps)}")
-            print(f"Alpha values range: [{alphas.min().item():.4f}, {alphas.max().item():.4f}]")
+            print(f"Alpha range: [{alphas.min().item():.6f}, {alphas.max().item():.6f}]")
+            print(f"SNR range: [{(-10 * torch.log10(1/alphas - 1)).min().item():.1f}dB, {(-10 * torch.log10(1/alphas - 1)).max().item():.1f}dB]")
         
     except Exception as e:
         print(f"Scheduler test failed: {e}")
