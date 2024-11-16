@@ -1121,8 +1121,9 @@ def test_transformer_shapes():
     timesteps = torch.randint(0, 1000, (B,), device=device, dtype=torch.long)
     encoder_hidden_states = torch.randn(B, 1, 4096, device=device, dtype=torch.float16)
     
+    # Call transformer with correct parameter names
     output = transformer(
-        sample=latents.permute(0, 2, 1, 3, 4),  # [B, T, C, H, W] for transformer
+        hidden_states=latents.permute(0, 2, 1, 3, 4),  # [B, T, C, H, W] for transformer
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,
     ).sample
