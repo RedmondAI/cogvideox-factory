@@ -178,24 +178,44 @@ def analyze_transformer(transformer):
     logger.info(f"Device: {transformer.device}")
     print(f"Model is on device: {transformer.device}")
     
+    # Print all available config attributes
+    print("\nAvailable config attributes:")
+    for key, value in transformer.config.items():
+        print(f"  {key}: {value}")
+    
     # Architecture details
-    print("Examining architecture details...")
+    print("\nExamining architecture details...")
     logger.info("\nArchitecture Details:")
-    logger.info(f"Hidden size: {transformer.config.hidden_size}")
-    logger.info(f"Intermediate size: {transformer.config.intermediate_size}")
-    logger.info(f"Num attention heads: {transformer.config.num_attention_heads}")
-    logger.info(f"Num hidden layers: {transformer.config.num_hidden_layers}")
-    print(f"Found {transformer.config.num_hidden_layers} hidden layers with {transformer.config.num_attention_heads} attention heads")
+    config = transformer.config
+    
+    # Get architecture details safely
+    architecture_details = {
+        "in_channels": config.get("in_channels"),
+        "out_channels": config.get("out_channels"),
+        "num_attention_heads": config.get("num_attention_heads"),
+        "num_layers": config.get("num_layers"),
+        "patch_size": config.get("patch_size"),
+        "cross_attention_dim": config.get("cross_attention_dim"),
+        "attention_head_dim": config.get("attention_head_dim"),
+        "num_hidden_layers": config.get("num_hidden_layers"),
+    }
+    
+    for key, value in architecture_details.items():
+        if value is not None:
+            logger.info(f"{key}: {value}")
+            print(f"{key}: {value}")
     
     # Input/Output configuration
-    print("Checking input/output configuration...")
+    print("\nChecking input/output configuration...")
     logger.info("\nInput/Output Configuration:")
-    logger.info(f"In channels: {transformer.config.in_channels}")
-    logger.info(f"Out channels: {transformer.config.out_channels}")
-    print(f"Input channels: {transformer.config.in_channels}, Output channels: {transformer.config.out_channels}")
+    in_channels = config.get("in_channels")
+    out_channels = config.get("out_channels")
+    logger.info(f"In channels: {in_channels}")
+    logger.info(f"Out channels: {out_channels}")
+    print(f"Input channels: {in_channels}, Output channels: {out_channels}")
     
     # Patch embedding analysis
-    print("Analyzing patch embedding...")
+    print("\nAnalyzing patch embedding...")
     logger.info("\nPatch Embedding Analysis:")
     if hasattr(transformer, 'patch_embed'):
         proj = transformer.patch_embed.proj
@@ -217,7 +237,7 @@ def analyze_transformer(transformer):
     # Test forward pass with correct shape
     print("\nTesting forward pass...")
     logger.info("\nTesting Forward Pass:")
-    B, T, C, H, W = 1, 5, transformer.config.in_channels, 32, 32
+    B, T, C, H, W = 1, 5, in_channels, 32, 32
     test_input = torch.randn(B, T, C, H, W, device=transformer.device, dtype=transformer.dtype)
     timesteps = torch.zeros(B, dtype=torch.long, device=transformer.device)
     print(f"Created test input with shape: {test_input.shape}")
@@ -273,7 +293,7 @@ def analyze_transformer(transformer):
         print(f"Cached: {torch.cuda.memory_reserved() / 1024**2:.1f}MB")
     
     print("\nTransformer analysis completed!")
-    return transformer.config.in_channels
+    return in_channels
 
 def analyze_scheduler(scheduler):
     """Analyze scheduler configuration."""
