@@ -334,9 +334,13 @@ class CogVideoXInpaintingPipeline:
             mask: Binary mask of shape [B, 1, T, H, W]
             
         Returns:
-            Processed mask of shape [B, 1, T//2, H//8, W//8]
+            Processed mask of shape [B, 1, T//ratio, H//8, W//8]
         """
-        mask = F.interpolate(mask, size=(mask.shape[2]//2, mask.shape[3]//8, mask.shape[4]//8), mode='nearest')
+        mask = F.interpolate(mask, size=(
+            mask.shape[2]//self.transformer.config.temporal_compression_ratio,
+            mask.shape[3]//8,
+            mask.shape[4]//8
+        ), mode='nearest')
         return mask
     
     def prepare_encoder_hidden_states(
