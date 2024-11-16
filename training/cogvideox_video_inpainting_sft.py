@@ -234,36 +234,22 @@ def compute_loss_v_pred(noise_pred, noise, alpha_prod_t, sigma_t, mask=None, noi
     return F.mse_loss(noise_pred, v_target)
 
 def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=None, noisy_frames=None):
-    """Compute v-prediction loss with SNR rescaling."""
+    """Compute v-prediction loss with SNR scaling."""
     # Get scheduler parameters
     alphas_cumprod = scheduler.alphas_cumprod
     alpha_prod_t = alphas_cumprod[timesteps].view(-1, 1, 1, 1, 1)
-    beta_prod_t = 1 - alpha_prod_t
-    sigma_t = beta_prod_t ** (0.5)
+    sigma_t = torch.sqrt(1 - alpha_prod_t)
     
-    # Compute v-prediction target
-    v_target = (alpha_prod_t ** (0.5) * noise - sigma_t * noise_pred) / (alpha_prod_t ** (0.5))
-    
-    # Compute SNR weights
-    snr = compute_snr(timesteps, scheduler)
-    mse_loss_weights = (
-        torch.stack([snr, scheduler.snr_shift_scale * torch.ones_like(snr)], dim=1).min(dim=1)[0]
-        / snr
-    )
+    # Compute target
+    v_target = noise * alpha_prod_t.sqrt() - sigma_t * noisy_frames if noisy_frames is not None else noise
     
     # Apply mask if provided
-    if mask is not None and noisy_frames is not None:
+    if mask is not None:
         masked_pred = noise_pred * mask
         masked_target = v_target * mask
-        loss = F.mse_loss(masked_pred, masked_target, reduction='none')
-    else:
-        loss = F.mse_loss(noise_pred, v_target, reduction='none')
+        return F.mse_loss(masked_pred, masked_target)
     
-    # Apply SNR weights
-    loss = loss.mean(dim=list(range(1, len(loss.shape))))
-    loss = (loss * mse_loss_weights).mean()
-    
-    return loss
+    return F.mse_loss(noise_pred, v_target)
 
 class CogVideoXInpaintingPipeline:
     def __init__(

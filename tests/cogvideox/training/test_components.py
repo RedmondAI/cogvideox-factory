@@ -9,33 +9,27 @@ from diffusers import (
 )
 from diffusers.utils.torch_utils import randn_tensor
 from ..utils import create_layer_norm
+import torch.nn.functional as F
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=None, noisy_frames=None):
     """Compute v-prediction loss with SNR scaling."""
-    # Get SNR values for timesteps
-    alphas_cumprod = scheduler.alphas_cumprod.to(device=noise_pred.device, dtype=noise_pred.dtype)
-    timesteps = timesteps.to(noise_pred.device)
-    snr = alphas_cumprod[timesteps] / (1 - alphas_cumprod[timesteps])
+    # Get scheduler parameters
+    alphas_cumprod = scheduler.alphas_cumprod
+    alpha_prod_t = alphas_cumprod[timesteps].view(-1, 1, 1, 1, 1)
+    sigma_t = torch.sqrt(1 - alpha_prod_t)
     
-    # Min-SNR weighting
-    snr_weights = torch.clamp(snr, max=scheduler.config.snr_max)
-    loss_weights = snr_weights / snr
-    
-    # Compute MSE loss
-    loss = torch.nn.functional.mse_loss(noise_pred, noise, reduction="none")
-    loss = loss.mean(dim=list(range(1, len(loss.shape))))
-    
-    # Apply loss weights
-    loss = loss * loss_weights
+    # Compute target
+    v_target = noise * alpha_prod_t.sqrt() - sigma_t * noisy_frames if noisy_frames is not None else noise
     
     # Apply mask if provided
-    if mask is not None and noisy_frames is not None:
-        assert mask.shape == noisy_frames.shape, "Mask and frames must have same shape"
-        loss = loss * (1 - mask.mean([1, 2, 3, 4]))
+    if mask is not None:
+        masked_pred = noise_pred * mask
+        masked_target = v_target * mask
+        return F.mse_loss(masked_pred, masked_target)
     
-    return loss.mean()
+    return F.mse_loss(noise_pred, v_target)
 
 def test_training_components():
     """Test training loop components."""
