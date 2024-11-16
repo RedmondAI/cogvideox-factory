@@ -402,13 +402,18 @@ def test_model_modification():
     # Print model structure to debug
     print("\nModel structure:")
     for name, module in model.named_modules():
-        if isinstance(module, nn.Conv3d):
-            print(f"Found Conv3d layer at {name}: {module}")
+        print(f"{name}: {type(module).__name__}")
     
-    # Get the first conv layer in conv_in_blocks
+    # Print model attributes
+    print("\nModel attributes:")
+    for attr in dir(model):
+        if not attr.startswith('_'):
+            print(attr)
+    
+    # Get the first conv layer in down blocks
     conv_in = None
     for name, module in model.named_modules():
-        if isinstance(module, nn.Conv3d) and 'conv_in_blocks' in name:
+        if isinstance(module, nn.Conv3d) and 'down_blocks' in name:
             conv_in = module
             print(f"\nUsing Conv3d layer: {name}")
             break
