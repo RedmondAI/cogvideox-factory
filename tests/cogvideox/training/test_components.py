@@ -330,8 +330,12 @@ def test_pipeline_components():
         )
     )
     
-    # Test dimension validation
-    B, C, T, H, W = 1, 3, 16, 128, 128
+    # Use model's native dimensions for testing
+    B, C = 1, 3
+    T = pipeline.model_frames  # Use model's frame count (49)
+    H = pipeline.model_height  # Use model's height (60)
+    W = pipeline.model_width   # Use model's width (90)
+    
     video = torch.randn(B, C, T, H, W, device=device)
     mask = torch.ones(B, 1, T, H, W, device=device)
     mask[:, :, :, H//4:3*H//4, W//4:3*W//4] = 0
@@ -340,17 +344,19 @@ def test_pipeline_components():
     
     # Test mask preparation
     prepared_mask = pipeline.prepare_mask(mask)
-    vae_temporal_ratio = 4  # VAE's temporal compression ratio
-    expected_temporal_dim = T // vae_temporal_ratio
+    vae_spatial_ratio = 8  # VAE's spatial compression ratio
+    temporal_ratio = pipeline.transformer.config.temporal_compression_ratio
+    expected_temporal_dim = T // temporal_ratio
+    
     assert prepared_mask.shape[2] == expected_temporal_dim, \
-        f"Temporal dimension not properly compressed in mask. Expected {expected_temporal_dim} (T={T} / VAE ratio={vae_temporal_ratio}), got {prepared_mask.shape[2]}"
+        f"Temporal dimension not properly compressed in mask. Expected {expected_temporal_dim} (T={T} / temporal ratio={temporal_ratio}), got {prepared_mask.shape[2]}"
     
     # Test latent preparation
     latents = pipeline.prepare_latents(B, T, H, W)
     assert latents.shape[1] == pipeline.transformer.config.in_channels, \
         "Wrong number of channels in latents"
     assert latents.shape[2] == expected_temporal_dim, \
-        f"Temporal dimension not properly compressed in latents. Expected {expected_temporal_dim} (T={T} / VAE ratio={vae_temporal_ratio}), got {latents.shape[2]}"
+        f"Temporal dimension not properly compressed in latents. Expected {expected_temporal_dim} (T={T} / temporal ratio={temporal_ratio}), got {latents.shape[2]}"
     
     # Test boundary continuity
     continuity = pipeline.check_boundary_continuity(video, H//2, window_size=8)
