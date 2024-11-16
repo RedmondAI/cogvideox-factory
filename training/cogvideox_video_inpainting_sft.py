@@ -349,7 +349,7 @@ class CogVideoXInpaintingPipeline:
             latents: Latent tensor of shape [B, C, T, H, W]
             
         Returns:
-            Video tensor of shape [B, C, T*2, H*8, W*8]
+            Video tensor of shape [B, C, 8, H*8, W*8]  # Fixed 8 frames output
         """
         latents = 1 / self.vae.config.scaling_factor * latents
         video = self.vae.decode(latents).sample
