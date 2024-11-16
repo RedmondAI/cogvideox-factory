@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import logging
 import torch.nn as nn
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -175,6 +176,7 @@ def analyze_transformer(transformer):
     logger.info(f"Transformer Config: {transformer.config}")
     logger.info(f"Model dtype: {transformer.dtype}")
     logger.info(f"Device: {transformer.device}")
+    print(f"Model is on device: {transformer.device}")
     
     # Architecture details
     print("Examining architecture details...")
@@ -215,7 +217,7 @@ def analyze_transformer(transformer):
     # Test forward pass with correct shape
     print("\nTesting forward pass...")
     logger.info("\nTesting Forward Pass:")
-    B, T, C, H, W = 1, 5, transformer.config.in_channels, 64, 64
+    B, T, C, H, W = 1, 5, transformer.config.in_channels, 32, 32
     test_input = torch.randn(B, T, C, H, W, device=transformer.device, dtype=transformer.dtype)
     timesteps = torch.zeros(B, dtype=torch.long, device=transformer.device)
     print(f"Created test input with shape: {test_input.shape}")
@@ -223,10 +225,21 @@ def analyze_transformer(transformer):
     with torch.no_grad():
         try:
             print("Attempting forward pass with [B, T, C, H, W] format...")
+            start_time = time.time()
             output = transformer(test_input, timestep=timesteps)
+            end_time = time.time()
+            print(f"Forward pass took {end_time - start_time:.2f} seconds")
+            
+            if isinstance(output, tuple):
+                output = output[0]
             logger.info(f"Input shape: {test_input.shape}")
-            logger.info(f"Output shape: {output[0].shape if isinstance(output, tuple) else output.shape}")
-            print(f"Forward pass successful! Output shape: {output[0].shape if isinstance(output, tuple) else output.shape}")
+            logger.info(f"Output shape: {output.shape}")
+            print(f"Output shape: {output.shape}")
+            
+            # Verify output shape matches input shape
+            if output.shape != test_input.shape:
+                print(f"WARNING: Output shape {output.shape} doesn't match input shape {test_input.shape}")
+            
         except Exception as e:
             print(f"First format failed: {e}")
             logger.error(f"Forward pass failed: {e}")
@@ -234,9 +247,15 @@ def analyze_transformer(transformer):
             print("Trying alternative format [B, C, T, H, W]...")
             test_input_alt = test_input.permute(0, 2, 1, 3, 4)  # Try different permutation
             logger.info(f"Trying alternative input shape: {test_input_alt.shape}")
+            start_time = time.time()
             output = transformer(test_input_alt, timestep=timesteps)
-            logger.info(f"Output shape: {output[0].shape if isinstance(output, tuple) else output.shape}")
-            print(f"Alternative format successful! Output shape: {output[0].shape if isinstance(output, tuple) else output.shape}")
+            end_time = time.time()
+            print(f"Alternative forward pass took {end_time - start_time:.2f} seconds")
+            
+            if isinstance(output, tuple):
+                output = output[0]
+            logger.info(f"Output shape: {output.shape}")
+            print(f"Alternative output shape: {output.shape}")
     
     # Memory analysis
     print("\nAnalyzing memory usage...")
@@ -248,24 +267,10 @@ def analyze_transformer(transformer):
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable parameters: {trainable_params:,}")
     
-    # Analyze attention layers
-    print("\nAnalyzing attention layers...")
-    logger.info("\nAttention Layer Analysis:")
-    attention_layers = 0
-    for name, module in transformer.named_modules():
-        if "attn" in name.lower():
-            attention_layers += 1
-            logger.info(f"\nLayer: {name}")
-            logger.info(f"Type: {type(module).__name__}")
-            if hasattr(module, "head_dim"):
-                logger.info(f"Head dimension: {module.head_dim}")
-                print(f"Layer {attention_layers}: Head dimension = {module.head_dim}")
-            if hasattr(module, "num_heads"):
-                logger.info(f"Number of heads: {module.num_heads}")
-                print(f"Layer {attention_layers}: Number of heads = {module.num_heads}")
-            if hasattr(module, "qkv"):
-                logger.info(f"QKV weight shape: {module.qkv.weight.shape}")
-                print(f"Layer {attention_layers}: QKV weight shape = {module.qkv.weight.shape}")
+    if torch.cuda.is_available():
+        print("\nGPU Memory Usage:")
+        print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.1f}MB")
+        print(f"Cached: {torch.cuda.memory_reserved() / 1024**2:.1f}MB")
     
     print("\nTransformer analysis completed!")
     return transformer.config.in_channels
@@ -371,8 +376,7 @@ def main():
             "THUDM/CogVideoX-5b",
             subfolder="transformer",
             torch_dtype=torch.bfloat16,
-            device_map="auto",  # This will automatically place the model on GPU
-        )
+        ).to(device)  # Manually move to GPU
         print("Transformer loaded successfully!")
         logger.info("Running Transformer analysis...")
         transformer_channels = analyze_transformer(transformer)
@@ -408,6 +412,14 @@ def main():
                 "vae_latent_channels": vae_channels,
                 "transformer_in_channels": transformer_channels,
                 "channel_match": vae_channels == transformer_channels,
+            },
+            "vae_analysis": {
+                "temporal_behavior": {
+                    "input_frames": 5,
+                    "output_frames": 8,
+                    "expected_compression": vae.config.temporal_compression_ratio,
+                    "actual_behavior": "expansion",
+                }
             }
         }
         
