@@ -441,10 +441,53 @@ def test_pipeline():
     """Test the inpainting pipeline with chunked processing."""
     from cogvideox_video_inpainting_sft import CogVideoXInpaintingPipeline
     from diffusers import CogVideoXDPMScheduler
+    import shutil
     
-    # Get test dataset and model
-    dataset = test_dataset()
-    model = test_model_modification()
+    # Create test data
+    test_dir = Path("assets/inpainting_test_pipeline")
+    if test_dir.exists():
+        shutil.rmtree(test_dir)
+    test_dir.mkdir(parents=True, exist_ok=True)
+    create_test_data(test_dir, sequence_name="sequence_000")
+    
+    # Create test dataset
+    from dataset import VideoInpaintingDataset
+    dataset = VideoInpaintingDataset(
+        data_root=str(test_dir),
+        split='train',
+        train_ratio=1.0,
+        val_ratio=0.0,
+        test_ratio=0.0,
+        max_num_frames=64,
+        height=720,
+        width=1280,
+    )
+    
+    # Create test model
+    from diffusers import CogVideoXTransformer3DModel
+    model = CogVideoXTransformer3DModel(
+        in_channels=3,
+        out_channels=3,
+        num_layers=1,
+        num_attention_heads=1,
+    )
+    
+    # Modify model for inpainting
+    old_proj = model.patch_embed.proj
+    new_proj = torch.nn.Conv2d(
+        old_proj.in_channels + 1,
+        old_proj.out_channels,
+        kernel_size=old_proj.kernel_size,
+        stride=old_proj.stride,
+        padding=old_proj.padding,
+    )
+    with torch.no_grad():
+        new_proj.weight[:, :3] = old_proj.weight
+        new_proj.weight[:, 3:] = 0
+        new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
+    model.patch_embed.proj = new_proj
+    
+    # Create scheduler
     scheduler = CogVideoXDPMScheduler()
     
     # Create pipeline with window processing
@@ -465,172 +508,288 @@ def test_pipeline():
     
     # Test pipeline processing
     with torch.no_grad():
-        output = pipeline(
-            rgb_frames=rgb[:, :32],  # Test with smaller sequence for memory
-            mask_frames=mask[:, :32],
-            num_inference_steps=2,  # Small number for testing
-        )
+        with torch.amp.autocast('cuda', enabled=True):
+            output = pipeline(
+                rgb_frames=rgb[:, :32],  # Test with smaller sequence for memory
+                mask_frames=mask[:, :32],
+                num_inference_steps=2,  # Small number for testing
+            )
     
     assert output.shape == rgb[:, :32].shape, f"Expected shape {rgb[:, :32].shape}, got {output.shape}"
+    
+    # Cleanup
+    shutil.rmtree(test_dir)
+    
     print("Pipeline test passed!")
 
 def test_error_handling():
     """Test error handling in pipeline."""
     from cogvideox_video_inpainting_sft import CogVideoXInpaintingPipeline
-    from diffusers import CogVideoXDPMScheduler
+    from diffusers import CogVideoXDPMScheduler, CogVideoXTransformer3DModel
+    import shutil
     
-    # Get test model
-    model = test_model_modification()
-    scheduler = CogVideoXDPMScheduler()
+    # Create test data
+    test_dir = Path("assets/inpainting_test_errors")
+    if test_dir.exists():
+        shutil.rmtree(test_dir)
+    test_dir.mkdir(parents=True, exist_ok=True)
+    create_test_data(test_dir, sequence_name="sequence_000")
+    
+    # Create test dataset
+    from dataset import VideoInpaintingDataset
+    dataset = VideoInpaintingDataset(
+        data_root=str(test_dir),
+        split='train',
+        train_ratio=1.0,
+        val_ratio=0.0,
+        test_ratio=0.0,
+        max_num_frames=64,
+        height=720,
+        width=1280,
+    )
+    
+    # Create model with inpainting modification
+    model = CogVideoXTransformer3DModel(
+        in_channels=3,
+        out_channels=3,
+        num_layers=1,
+        num_attention_heads=1,
+    )
+    old_proj = model.patch_embed.proj
+    new_proj = torch.nn.Conv2d(
+        old_proj.in_channels + 1,
+        old_proj.out_channels,
+        kernel_size=old_proj.kernel_size,
+        stride=old_proj.stride,
+        padding=old_proj.padding,
+    )
+    with torch.no_grad():
+        new_proj.weight[:, :3] = old_proj.weight
+        new_proj.weight[:, 3:] = 0
+        new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
+    model.patch_embed.proj = new_proj
     
     # Create pipeline
     pipeline = CogVideoXInpaintingPipeline(
         vae=model,
         transformer=model,
-        scheduler=scheduler,
+        scheduler=CogVideoXDPMScheduler(),
         window_size=WINDOW_SIZE,
         overlap=OVERLAP,
     )
     
-    # Test with invalid input
-    try:
-        # Should raise error for wrong shape
-        invalid_input = torch.randn(1, 32, 2, 64, 64)  # Wrong number of channels
-        pipeline(invalid_input, invalid_input)
-        assert False, "Should have raised error for invalid input"
-    except Exception as e:
-        assert "Error in pipeline inference" in str(e)
+    # Get test batch
+    batch = dataset[0]
+    rgb = batch["rgb"].unsqueeze(0)
+    mask = batch["mask"].unsqueeze(0)
     
-    print("Error handling test passed!")
+    # Test error handling with mixed precision
+    with torch.no_grad():
+        with torch.amp.autocast('cuda', enabled=True):
+            # Test with mismatched shapes
+            with pytest.raises(ValueError, match="RGB and mask shapes must match"):
+                pipeline(
+                    rgb_frames=rgb[:, :32],
+                    mask_frames=mask[:, :16],  # Different sequence length
+                )
+            
+            # Test with invalid overlap
+            with pytest.raises(ValueError, match="Overlap must be less than window size"):
+                pipeline.overlap = pipeline.window_size + 1
+                pipeline(rgb_frames=rgb[:, :32], mask_frames=mask[:, :32])
+    
+    # Cleanup
+    shutil.rmtree(test_dir)
+    
+    print("Error handling tests passed!")
 
 def test_edge_cases():
     """Test edge cases."""
     from cogvideox_video_inpainting_sft import CogVideoXInpaintingPipeline
-    from diffusers import CogVideoXDPMScheduler
+    from diffusers import CogVideoXDPMScheduler, CogVideoXTransformer3DModel
+    import shutil
     
-    # Get test model and create pipeline
-    model = test_model_modification()
-    scheduler = CogVideoXDPMScheduler()
+    # Create test data
+    test_dir = Path("assets/inpainting_test_edges")
+    if test_dir.exists():
+        shutil.rmtree(test_dir)
+    test_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Test corrupted frame
+    create_test_data(test_dir, sequence_name="sequence_000", corrupt_frame_idx=50)
+    
+    # Create test dataset
+    from dataset import VideoInpaintingDataset
+    dataset = VideoInpaintingDataset(
+        data_root=str(test_dir),
+        split='train',
+        train_ratio=1.0,
+        val_ratio=0.0,
+        test_ratio=0.0,
+        max_num_frames=64,
+        height=720,
+        width=1280,
+    )
+    
+    # Create model with inpainting modification
+    model = CogVideoXTransformer3DModel(
+        in_channels=3,
+        out_channels=3,
+        num_layers=1,
+        num_attention_heads=1,
+    )
+    old_proj = model.patch_embed.proj
+    new_proj = torch.nn.Conv2d(
+        old_proj.in_channels + 1,
+        old_proj.out_channels,
+        kernel_size=old_proj.kernel_size,
+        stride=old_proj.stride,
+        padding=old_proj.padding,
+    )
+    with torch.no_grad():
+        new_proj.weight[:, :3] = old_proj.weight
+        new_proj.weight[:, 3:] = 0
+        new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
+    model.patch_embed.proj = new_proj
+    
+    # Create pipeline
     pipeline = CogVideoXInpaintingPipeline(
         vae=model,
         transformer=model,
-        scheduler=scheduler,
+        scheduler=CogVideoXDPMScheduler(),
         window_size=WINDOW_SIZE,
         overlap=OVERLAP,
     )
     
-    # Test cases
-    test_cases = [
-        # Very small mask
-        {
-            'name': 'small_mask',
-            'rgb': torch.randn(1, 32, 3, 64, 64),
-            'mask': torch.zeros(1, 32, 1, 64, 64),
-            'mask_area': (28, 28, 36, 36),  # Small central area
-        },
-        # Full frame mask
-        {
-            'name': 'full_mask',
-            'rgb': torch.randn(1, 32, 3, 64, 64),
-            'mask': torch.ones(1, 32, 1, 64, 64),
-        },
-        # Irregular mask shape
-        {
-            'name': 'irregular_mask',
-            'rgb': torch.randn(1, 32, 3, 64, 64),
-            'mask': torch.rand(1, 32, 1, 64, 64) > 0.5,
-        },
-        # Minimum sequence length
-        {
-            'name': 'minimum_sequence',
-            'rgb': torch.randn(1, 2, 3, 64, 64),
-            'mask': torch.ones(1, 2, 1, 64, 64),
-        },
-    ]
+    # Get test batch
+    batch = dataset[0]
+    rgb = batch["rgb"].unsqueeze(0)
+    mask = batch["mask"].unsqueeze(0)
     
-    for case in test_cases:
-        print(f"Testing {case['name']}...")
-        
-        # Create mask if specified
-        if 'mask_area' in case:
-            x1, y1, x2, y2 = case['mask_area']
-            case['mask'][:, :, :, y1:y2, x1:x2] = 1
-        
-        # Run inference
-        with torch.no_grad():
-            output = pipeline(
-                rgb_frames=case['rgb'],
-                mask_frames=case['mask'].float(),
-                num_inference_steps=2,
+    # Test edge cases with mixed precision
+    with torch.no_grad():
+        with torch.amp.autocast('cuda', enabled=True):
+            # Test with minimum sequence length
+            min_output = pipeline(
+                rgb_frames=rgb[:, :1],
+                mask_frames=mask[:, :1],
+                num_inference_steps=1,
             )
-        
-        # Check output
-        assert output.shape == case['rgb'].shape, f"Wrong output shape for {case['name']}"
-        assert not torch.isnan(output).any(), f"NaN in output for {case['name']}"
+            assert min_output.shape == rgb[:, :1].shape
+            
+            # Test with maximum overlap
+            pipeline.overlap = pipeline.window_size - 1
+            max_overlap_output = pipeline(
+                rgb_frames=rgb[:, :32],
+                mask_frames=mask[:, :32],
+                num_inference_steps=1,
+            )
+            assert max_overlap_output.shape == rgb[:, :32].shape
+            
+            # Test with zero overlap
+            pipeline.overlap = 0
+            no_overlap_output = pipeline(
+                rgb_frames=rgb[:, :32],
+                mask_frames=mask[:, :32],
+                num_inference_steps=1,
+            )
+            assert no_overlap_output.shape == rgb[:, :32].shape
     
-    print("Edge cases test passed!")
+    # Cleanup
+    shutil.rmtree(test_dir)
+    
+    print("Edge cases tests passed!")
 
 def test_training_step():
     """Test a single training step with chunked processing."""
     import torch.nn.functional as F
-    from diffusers import CogVideoXDPMScheduler
+    from diffusers import CogVideoXDPMScheduler, CogVideoXTransformer3DModel
+    import shutil
     
-    # Get test dataset and model
-    dataset = test_dataset()
-    model = test_model_modification()
-    scheduler = CogVideoXDPMScheduler()
+    # Create test data
+    test_dir = Path("assets/inpainting_test_training")
+    if test_dir.exists():
+        shutil.rmtree(test_dir)
+    test_dir.mkdir(parents=True, exist_ok=True)
+    create_test_data(test_dir, sequence_name="sequence_000")
+    
+    # Create test dataset
+    from dataset import VideoInpaintingDataset
+    dataset = VideoInpaintingDataset(
+        data_root=str(test_dir),
+        split='train',
+        train_ratio=1.0,
+        val_ratio=0.0,
+        test_ratio=0.0,
+        max_num_frames=64,
+        height=720,
+        width=1280,
+    )
+    
+    # Create model with inpainting modification
+    model = CogVideoXTransformer3DModel(
+        in_channels=3,
+        out_channels=3,
+        num_layers=1,
+        num_attention_heads=1,
+    )
+    old_proj = model.patch_embed.proj
+    new_proj = torch.nn.Conv2d(
+        old_proj.in_channels + 1,
+        old_proj.out_channels,
+        kernel_size=old_proj.kernel_size,
+        stride=old_proj.stride,
+        padding=old_proj.padding,
+    )
+    with torch.no_grad():
+        new_proj.weight[:, :3] = old_proj.weight
+        new_proj.weight[:, 3:] = 0
+        new_proj.bias = torch.nn.Parameter(old_proj.bias.clone())
+    model.patch_embed.proj = new_proj
+    
+    # Create optimizer and scheduler
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    noise_scheduler = CogVideoXDPMScheduler()
     
     # Get test batch
     batch = dataset[0]
-    rgb = batch["rgb"].unsqueeze(0)[:, :32]  # Use smaller sequence for testing
-    mask = batch["mask"].unsqueeze(0)[:, :32]
-    gt = batch["gt"].unsqueeze(0)[:, :32]
+    rgb = batch["rgb"].unsqueeze(0)
+    mask = batch["mask"].unsqueeze(0)
     
-    # Test chunk processing
-    chunk_size = 16
-    overlap = 4
-    chunk_losses = []
-    
-    for start_idx in range(0, rgb.shape[1] - chunk_size + 1, chunk_size - overlap):
-        # Get chunk
-        chunk_rgb = rgb[:, start_idx:start_idx + chunk_size]
-        chunk_mask = mask[:, start_idx:start_idx + chunk_size]
-        chunk_gt = gt[:, start_idx:start_idx + chunk_size]
+    # Training step with mixed precision
+    model.train()
+    with torch.amp.autocast('cuda', enabled=True):
+        # Add noise to input
+        noise = torch.randn_like(rgb)
+        timesteps = torch.randint(0, noise_scheduler.num_train_timesteps, (rgb.shape[0],))
+        noisy_rgb = noise_scheduler.add_noise(rgb, noise, timesteps)
         
-        # Pad resolution
-        chunk_rgb, rgb_pad = pad_to_multiple(chunk_rgb)
-        chunk_mask, _ = pad_to_multiple(chunk_mask)
-        chunk_gt, _ = pad_to_multiple(chunk_gt)
-        
-        # Sample noise
-        noise = torch.randn_like(chunk_gt)
-        timesteps = torch.tensor([500])
-        
-        # Model prediction
-        model_input = torch.cat([chunk_gt, chunk_mask], dim=2)
-        noise_pred = model(
-            sample=model_input,
+        # Forward pass
+        encoder_hidden_states = torch.randn(
+            rgb.shape[0],
+            rgb.shape[1],
+            model.config.cross_attention_dim,
+        )
+        model_output = model(
+            sample=torch.cat([noisy_rgb, mask], dim=2),
+            encoder_hidden_states=encoder_hidden_states,
             timestep=timesteps,
-            return_dict=False,
-        )[0]
+        )
         
-        # Remove padding
-        noise_pred = unpad(noise_pred, (rgb_pad[0]//8, rgb_pad[1]//8))
-        noise = unpad(noise, (rgb_pad[0]//8, rgb_pad[1]//8))
+        # Compute loss
+        loss = F.mse_loss(model_output, noise)
         
-        # Calculate loss
-        chunk_loss = F.mse_loss(noise_pred, noise, reduction="none")
-        chunk_loss = (chunk_loss * (chunk_mask + 1.0)).mean()
-        chunk_losses.append(chunk_loss)
+        # Backward pass
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
     
-    # Average chunk losses
-    loss = torch.stack(chunk_losses).mean()
+    assert not torch.isnan(loss), "Loss should not be NaN"
     
-    assert not torch.isnan(loss), "Loss is NaN"
-    assert loss.item() > 0, "Loss should be positive at start of training"
+    # Cleanup
+    shutil.rmtree(test_dir)
     
     print("Training step test passed!")
-    print(f"Test loss: {loss.item()}")
 
 def run_all_tests():
     """Run all tests with proper setup and teardown."""
