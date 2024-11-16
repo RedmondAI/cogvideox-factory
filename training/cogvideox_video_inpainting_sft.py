@@ -717,6 +717,9 @@ def train_loop(
     progress_bar.set_description("Steps")
     global_step = start_global_step
     
+    # Get model dtype
+    model_dtype = next(model.parameters()).dtype
+    
     # Training loop
     for epoch in range(num_train_epochs):
         model.train()
@@ -729,16 +732,16 @@ def train_loop(
                 continue
                 
             with accelerator.accumulate(model):
-                # Get input tensors
-                clean_frames = batch["rgb"]
-                mask = batch["mask"]
+                # Get input tensors and ensure correct dtype
+                clean_frames = batch["rgb"].to(dtype=model_dtype)
+                mask = batch["mask"].to(dtype=model_dtype)
                 
                 # Sample noise and add to frames
                 noise = torch.randn_like(clean_frames)
                 timesteps = torch.randint(
                     0, noise_scheduler.config.num_train_timesteps, (clean_frames.shape[0],), 
                     device=clean_frames.device
-                )
+                ).to(dtype=model_dtype)  # Match model dtype
                 noisy_frames = noise_scheduler.add_noise(clean_frames, noise, timesteps)
                 
                 # Get model prediction
