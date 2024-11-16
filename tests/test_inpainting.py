@@ -322,11 +322,15 @@ def test_dataset():
     # Create test directory
     test_dir = Path("assets/inpainting_test")
     test_dir.mkdir(parents=True, exist_ok=True)
-    create_test_data(test_dir)
+    create_test_data(test_dir, sequence_name="sequence_000")  # Create sequence with standard name
     
     # Create dataset
     dataset = VideoInpaintingDataset(
         data_root=str(test_dir),
+        split='train',  # Use train split
+        train_ratio=1.0,  # Use all data for training
+        val_ratio=0.0,
+        test_ratio=0.0,
         max_num_frames=64,
         height=720,
         width=1280,
@@ -349,7 +353,6 @@ def test_dataset():
     assert item["gt"].shape == (64, 3, 720, 1280), f"Wrong GT shape: {item['gt'].shape}"
     
     print("Dataset test passed!")
-    return dataset
 
 def test_model_modification():
     """Test the model input channel modification and memory optimizations."""
