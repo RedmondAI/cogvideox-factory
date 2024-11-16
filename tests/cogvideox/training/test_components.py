@@ -349,6 +349,8 @@ def test_pipeline_components():
     latents = pipeline.prepare_latents(B, T, H, W)
     assert latents.shape[1] == pipeline.transformer.config.in_channels, \
         "Wrong number of channels in latents"
+    assert latents.shape[2] == expected_temporal_dim, \
+        f"Temporal dimension not properly compressed in latents. Expected {expected_temporal_dim} (T={T} / VAE ratio={vae_temporal_ratio}), got {latents.shape[2]}"
     
     # Test boundary continuity
     continuity = pipeline.check_boundary_continuity(video, H//2, window_size=8)

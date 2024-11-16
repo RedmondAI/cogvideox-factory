@@ -321,8 +321,18 @@ class CogVideoXInpaintingPipeline:
         width: int,
         generator: Optional[torch.Generator] = None,
     ) -> torch.Tensor:
-        """Prepare random latents accounting for temporal compression."""
-        latents_shape = (batch_size, self.transformer.config.in_channels, num_frames//2, height//8, width//8)
+        """Prepare random latents accounting for VAE's temporal compression."""
+        # Apply VAE's compression ratios
+        vae_temporal_ratio = 4  # VAE's temporal compression ratio
+        vae_spatial_ratio = 8   # VAE's spatial compression ratio
+        
+        latents_shape = (
+            batch_size, 
+            self.transformer.config.in_channels, 
+            num_frames//vae_temporal_ratio,  # VAE temporal compression (4x)
+            height//vae_spatial_ratio,       # VAE spatial compression (8x)
+            width//vae_spatial_ratio         # VAE spatial compression (8x)
+        )
         latents = torch.randn(latents_shape, generator=generator, device=self.device, dtype=self.dtype)
         latents = latents * self.scheduler.init_noise_sigma
         return latents
