@@ -121,15 +121,17 @@ def test_training_components():
         encoder_hidden_states=encoder_hidden_states,
     ).sample
     
-    # Verify output shape matches input shape
-    assert noise_pred.shape == noisy_frames.shape, \
-        f"Model output shape {noise_pred.shape} doesn't match input shape {noisy_frames.shape}"
+    # Verify batch, temporal and channel dimensions match
+    assert noise_pred.shape[:3] == noisy_frames.shape[:3], \
+        f"Model output shape {noise_pred.shape} doesn't match input shape {noisy_frames.shape} in batch, temporal, or channel dimensions"
     
-    # Verify spatial dimensions
-    expected_h = height // (vae_spatial_ratio * patch_size)
-    expected_w = width // (vae_spatial_ratio * patch_size)
-    assert noise_pred.shape[3] == expected_h and noise_pred.shape[4] == expected_w, \
-        f"Expected spatial dimensions ({expected_h}, {expected_w}), got ({noise_pred.shape[3]}, {noise_pred.shape[4]})"
+    # Verify spatial dimensions after patch embedding
+    H_in, W_in = noisy_frames.shape[3:]
+    H_out = H_in - (H_in % model.config.patch_size)  # Round down to nearest multiple of patch_size
+    W_out = W_in - (W_in % model.config.patch_size)  # Round down to nearest multiple of patch_size
+    
+    assert noise_pred.shape[3:] == (H_out, W_out), \
+        f"Expected spatial dimensions ({H_out}, {W_out}), got {noise_pred.shape[3:]}"
     
     # Verify no NaN values from activations
     assert not torch.isnan(noise_pred).any(), "Model output contains NaN values"

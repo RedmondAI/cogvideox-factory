@@ -233,16 +233,6 @@ def compute_loss_v_pred(noise_pred, noise, alpha_prod_t, sigma_t, mask=None, noi
     
     return F.mse_loss(noise_pred, v_target)
 
-def compute_snr(timesteps, scheduler):
-    """Compute SNR for given timesteps."""
-    alphas_cumprod = scheduler.alphas_cumprod
-    sqrt_alphas_cumprod = alphas_cumprod ** 0.5
-    sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
-    
-    # Compute SNR
-    snr = (sqrt_alphas_cumprod / sqrt_one_minus_alphas_cumprod) ** 2
-    return snr[timesteps]
-
 def compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, scheduler, mask=None, noisy_frames=None):
     """Compute v-prediction loss with SNR rescaling."""
     # Get scheduler parameters
@@ -926,6 +916,18 @@ def train_loop(
                 # Verify no NaN values from activations or normalization
                 if torch.isnan(noise_pred).any():
                     raise ValueError("Model output contains NaN values - possible activation or normalization issue")
+                
+                # Verify shape consistency
+                if noise_pred.shape[:3] != clean_frames.shape[:3]:
+                    raise ValueError(f"Model output shape {noise_pred.shape} doesn't match input shape {clean_frames.shape} in batch, temporal, or channel dimensions")
+                
+                # Verify spatial dimensions after patch embedding
+                H_in, W_in = clean_frames.shape[3:]
+                H_out = H_in - (H_in % model.config.patch_size)  # Round down to nearest multiple of patch_size
+                W_out = W_in - (W_in % model.config.patch_size)  # Round down to nearest multiple of patch_size
+                
+                if noise_pred.shape[3:] != (H_out, W_out):
+                    raise ValueError(f"Expected spatial dimensions ({H_out}, {W_out}), got {noise_pred.shape[3:]}")
                 
                 # Compute loss with SNR rescaling
                 loss = compute_loss_v_pred_with_snr(
