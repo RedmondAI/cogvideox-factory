@@ -1054,8 +1054,8 @@ def main(args):
     )
     
     # Prepare everything with accelerator
-    pipeline.transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        pipeline.transformer, optimizer, train_dataloader, lr_scheduler
+    pipeline.transformer, optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(
+        pipeline.transformer, optimizer, train_dataloader, val_dataloader, lr_scheduler
     )
     
     # Initialize gradient scaler for mixed precision
@@ -1080,6 +1080,13 @@ def main(args):
         disable=not accelerator.is_local_main_process,
         desc="Steps",
     )
+    
+    # Get validation data
+    try:
+        validation_data = next(iter(val_dataloader))
+    except:
+        validation_data = None
+        logger.warning("No validation data available")
     
     for epoch in range(first_epoch, args.num_train_epochs):
         pipeline.transformer.train()
@@ -1182,7 +1189,7 @@ def main(args):
                         pipeline=pipeline,
                         args=args,
                         epoch=epoch,
-                        validation_data=next(iter(accelerator.get_eval_dataloader())),
+                        validation_data=validation_data,
                     )
             
             progress_bar.update(1)

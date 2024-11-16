@@ -24,6 +24,7 @@ def get_args():
     # Training configuration
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--train_batch_size", type=int, default=4)
+    parser.add_argument("--eval_batch_size", type=int, default=4)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=8)
     parser.add_argument("--max_num_frames", type=int, default=49)
     parser.add_argument("--num_train_epochs", type=int, default=100)
@@ -31,6 +32,7 @@ def get_args():
     parser.add_argument("--lr_warmup_steps", type=int, default=1000)
     parser.add_argument("--checkpointing_steps", type=int, default=2000)
     parser.add_argument("--validation_steps", type=int, default=500)
+    parser.add_argument("--logging_dir", type=str, default="logs")
     
     # Optimization settings
     parser.add_argument("--mixed_precision", type=str, choices=["no", "fp16", "bf16"], default="bf16")
@@ -59,6 +61,7 @@ def get_args():
     parser.add_argument("--allow_tf32", action="store_true")
     parser.add_argument("--report_to", type=str, default="wandb")
     parser.add_argument("--dataloader_num_workers", type=int, default=8)
+    parser.add_argument("--num_workers", type=int, default=8)  # Alias for dataloader_num_workers
     parser.add_argument("--deepspeed_config", type=str, default=None)
     
     args = parser.parse_args()
