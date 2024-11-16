@@ -77,25 +77,10 @@ def test_training_components():
     # Convert to [B, T, C, H, W] format for transformer
     latents = latents.permute(0, 2, 1, 3, 4)
     
-    # Project through patch embedding
-    B, T, C, H, W = latents.shape
-    latents = latents.reshape(-1, C, H, W)  # [B*T, C, H, W]
-    latents = model.patch_embed.proj(latents)  # [B*T, 3072, H//2, W//2]
-    
-    # Reshape back maintaining [B, T, C, H, W] format
-    _, C_proj, H_proj, W_proj = latents.shape
-    latents = latents.reshape(B, T, C_proj, H_proj, W_proj)
-    
-    # Convert to [B, C, T, H, W] for scheduler operations
-    latents_scheduler = latents.permute(0, 2, 1, 3, 4)
-    
-    # Create noise and add noise in scheduler format
-    noise = torch.randn_like(latents_scheduler)
+    # Create noisy latents in transformer format
+    noise = torch.randn_like(latents)
     timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
-    noisy_frames = scheduler.add_noise(latents_scheduler, noise, timesteps)
-    
-    # Convert back to transformer format [B, T, C, H, W]
-    noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
+    noisy_frames = scheduler.add_noise(latents.permute(0, 1, 2, 3, 4), noise, timesteps).permute(0, 2, 1, 3, 4)
     
     # Create dummy encoder hidden states
     encoder_hidden_states = torch.zeros(batch_size, 1, model.config.text_embed_dim, device=device, dtype=torch.float16)
