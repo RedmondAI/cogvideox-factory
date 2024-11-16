@@ -33,9 +33,9 @@ CHUNK_SIZE=64  # Increased for more efficient processing
 # Memory optimizations
 USE_8BIT_ADAM=true
 USE_FLASH_ATTENTION=true
-GRADIENT_CHECKPOINTING=""  # Changed to empty string
+GRADIENT_CHECKPOINTING="--gradient_checkpointing"  # Fixed flag
 VAE_PRECISION="bf16"  # Changed to match mixed precision setting
-USE_CPU_OFFLOAD=true
+ENABLE_MODEL_CPU_OFFLOAD="--enable_model_cpu_offload"  # Fixed flag
 ENABLE_SLICING=true
 ENABLE_TILING=true
 
@@ -118,9 +118,9 @@ deepspeed --include localhost:0,1,2,3,4,5,6,7 \
   --chunk_size=$CHUNK_SIZE \
   --use_8bit_adam=$USE_8BIT_ADAM \
   --use_flash_attention=$USE_FLASH_ATTENTION \
-  --gradient_checkpointing \
+  $GRADIENT_CHECKPOINTING \
   --vae_precision=$VAE_PRECISION \
-  --use_cpu_offload=$USE_CPU_OFFLOAD \
+  $ENABLE_MODEL_CPU_OFFLOAD \
   --enable_slicing=$ENABLE_SLICING \
   --enable_tiling=$ENABLE_TILING \
   --allow_tf32 \
