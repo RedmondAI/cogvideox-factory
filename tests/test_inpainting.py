@@ -1265,8 +1265,8 @@ def test_resolution_scaling():
     ]
     
     # Chunking parameters
-    chunk_size = 256  # Base chunk size
-    overlap = 32      # Overlap size
+    chunk_size = 256  # Base chunk size (in pixel space)
+    overlap = 32      # Overlap size (in pixel space)
     
     for H, W in resolutions:
         print(f"\nTesting resolution {H}x{W}")
@@ -1295,9 +1295,9 @@ def test_resolution_scaling():
         # Determine if chunking is needed
         use_chunks = W > chunk_size
         if use_chunks:
-            effective_chunk_size = chunk_size - 2 * overlap
-            num_chunks = math.ceil(W / effective_chunk_size)
-            print(f"Using chunks - Base size: {chunk_size}, Effective size: {effective_chunk_size}")
+            effective_chunk_size = (chunk_size - 2 * overlap) // 8  # Convert to latent space
+            num_chunks = math.ceil(W // 8 / effective_chunk_size)  # Calculate in latent space
+            print(f"Using chunks - Base size: {chunk_size}, Effective size: {effective_chunk_size*8} (in pixel space)")
             print(f"Overlap: {overlap}, Number of chunks: {num_chunks}")
         
         # Test encoding
@@ -1322,14 +1322,14 @@ def test_resolution_scaling():
         
         # Test for visible seams in output (basic check)
         if use_chunks:
-            # Calculate expected chunk boundaries
+            # Calculate boundaries in pixel space
             boundaries = []
             offset = 0
             for i in range(num_chunks - 1):
-                offset += effective_chunk_size
+                offset += effective_chunk_size * 8  # Convert back to pixel space
                 if offset >= W:
                     break
-                boundaries.append(offset * 8)  # Account for VAE upscaling
+                boundaries.append(offset)
             
             # Check smoothness at boundaries
             print("\nChecking chunk boundaries:")
