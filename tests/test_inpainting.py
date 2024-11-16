@@ -1,33 +1,36 @@
 import os
 import sys
+import gc
+import shutil
+import logging
+import pytest
 import torch
-import numpy as np
+import torch.nn.functional as F
 from pathlib import Path
 from PIL import Image
-import pytest
-import logging
-import torch.nn.functional as F
-from torch.cuda.amp import autocast
-import gc
-from accelerate.state import PartialState
-from accelerate import Accelerator
-from accelerate.utils import set_seed, DistributedDataParallelKwargs
+import numpy as np
+from typing import Dict, List, Optional, Tuple, Union
 
-# Setup logging
+from diffusers import (
+    AutoencoderKLCogVideoX,
+    CogVideoXTransformer3DModel,
+    CogVideoXDPMScheduler,
+)
+
+# Add training directory to path for imports
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+training_dir = os.path.join(project_root, "training")
+sys.path.append(training_dir)
+
+from cogvideox_video_inpainting_sft import CogVideoXInpaintingPipeline
+
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize accelerate state with DDP config
-accelerator = Accelerator(
-    kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
-    mixed_precision="fp16",
-)
-_ = PartialState()
-
-# Set constants for A100 optimization
-WINDOW_SIZE = 64
-OVERLAP = 16
-MAX_RESOLUTION = 2048
+# Set device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def get_gpu_memory():
     """Get current GPU memory usage."""
@@ -1085,11 +1088,11 @@ def test_vae_shapes():
         "THUDM/CogVideoX-5b",
         subfolder="vae",
         torch_dtype=torch.float16
-    )
+    ).to(device)
     
     # Test input shapes
     B, C, T, H, W = 1, 3, 5, 64, 64
-    x = torch.randn(B, C, T, H, W)
+    x = torch.randn(B, C, T, H, W, device=device, dtype=torch.float16)
     
     # Test encoding
     latents = vae.encode(x).latent_dist.sample()
@@ -1107,15 +1110,15 @@ def test_transformer_shapes():
         "THUDM/CogVideoX-5b",
         subfolder="transformer",
         torch_dtype=torch.float16
-    )
+    ).to(device)
     
     # Test input shapes
     B, T, C, H, W = 1, 5, 16, 8, 8  # [B, T, C, H, W] format
-    x = torch.randn(B, T, C, H, W)
+    x = torch.randn(B, T, C, H, W, device=device, dtype=torch.float16)
     
     # Create conditioning
-    timesteps = torch.zeros(B, dtype=torch.long)
-    encoder_hidden_states = torch.randn(B, 1, 4096)  # Single conditioning token
+    timesteps = torch.zeros(B, dtype=torch.long, device=device)
+    encoder_hidden_states = torch.randn(B, 1, 4096, device=device, dtype=torch.float16)  # Single conditioning token
     
     # Test forward pass
     output = transformer(x, timestep=timesteps, encoder_hidden_states=encoder_hidden_states)
@@ -1126,16 +1129,20 @@ def test_transformer_shapes():
     assert output.shape == expected_shape, f"Expected output shape {expected_shape}, got {output.shape}"
 
 def test_scheduler_config():
-    """Test scheduler configuration and step function."""
+    """Test scheduler configuration."""
     scheduler = CogVideoXDPMScheduler.from_pretrained(
         "THUDM/CogVideoX-5b",
         subfolder="scheduler"
     )
     
-    # Verify scheduler configuration
-    assert scheduler.config.prediction_type == "v_prediction", "Expected v-prediction type"
-    assert scheduler.config.rescale_betas_zero_snr, "Expected SNR rescaling to be enabled"
-    assert scheduler.config.snr_shift_scale == 1.0, "Expected SNR shift scale of 1.0"
+    # Verify default configuration
+    assert scheduler.config.prediction_type == "v_prediction"
+    assert scheduler.config.beta_schedule == "scaled_linear"
+    assert scheduler.config.beta_start == 0.00085
+    assert scheduler.config.beta_end == 0.012
+    assert scheduler.config.steps_offset == 0
+    assert scheduler.config.rescale_betas_zero_snr
+    assert scheduler.config.timestep_spacing == "trailing"
     
     # Test scheduler step
     B, C, T, H, W = 1, 16, 5, 8, 8
@@ -1213,12 +1220,14 @@ def test_resolution_scaling():
         "THUDM/CogVideoX-5b",
         subfolder="vae",
         torch_dtype=torch.float16
-    )
+    ).to(device)
+    
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         "THUDM/CogVideoX-5b",
         subfolder="transformer",
         torch_dtype=torch.float16
-    )
+    ).to(device)
+    
     scheduler = CogVideoXDPMScheduler.from_pretrained(
         "THUDM/CogVideoX-5b",
         subfolder="scheduler"
@@ -1245,8 +1254,8 @@ def test_resolution_scaling():
         try:
             # Create test inputs
             B, C = 1, 3
-            video = torch.randn(B, C, frames, height, width)
-            mask = torch.ones(B, 1, frames, height, width)
+            video = torch.randn(B, C, frames, height, width, device=device, dtype=torch.float16)
+            mask = torch.ones(B, 1, frames, height, width, device=device, dtype=torch.float16)
             
             # Calculate scaling
             spatial_scale, temporal_scale = pipeline.validate_dimensions(video, mask)
@@ -1281,12 +1290,14 @@ def test_memory_calculation():
         "THUDM/CogVideoX-5b",
         subfolder="vae",
         torch_dtype=torch.float16
-    )
+    ).to(device)
+    
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         "THUDM/CogVideoX-5b",
         subfolder="transformer",
         torch_dtype=torch.float16
-    )
+    ).to(device)
+    
     scheduler = CogVideoXDPMScheduler.from_pretrained(
         "THUDM/CogVideoX-5b",
         subfolder="scheduler"
@@ -1300,8 +1311,8 @@ def test_memory_calculation():
     
     # Test with original dimensions
     B, C, T, H, W = 1, 3, 100, 720, 1280
-    video = torch.randn(B, C, T, H, W)
-    mask = torch.ones(B, 1, T, H, W)
+    video = torch.randn(B, C, T, H, W, device=device, dtype=torch.float16)
+    mask = torch.ones(B, 1, T, H, W, device=device, dtype=torch.float16)
     
     # Calculate memory manually
     bytes_per_element = 2  # fp16
