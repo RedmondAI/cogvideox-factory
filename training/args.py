@@ -468,6 +468,110 @@ def _get_configuration_args(parser: argparse.ArgumentParser) -> None:
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
         ),
     )
+    parser.add_argument(
+        "--deepspeed_config",
+        type=str,
+        default=None,
+        help="Path to DeepSpeed config file.",
+    )
+
+
+def _get_additional_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--video_dir",
+        type=str,
+        default="RGB",
+        help="Directory containing input video frames.",
+    )
+    parser.add_argument(
+        "--mask_dir",
+        type=str,
+        default="MASK",
+        help="Directory containing mask frames.",
+    )
+    parser.add_argument(
+        "--gt_dir",
+        type=str,
+        default="GT",
+        help="Directory containing ground truth frames.",
+    )
+    parser.add_argument(
+        "--image_size",
+        type=int,
+        default=720,
+        help="Size to resize images to.",
+    )
+    parser.add_argument(
+        "--enable_xformers_memory_efficient_attention",
+        action="store_true",
+        help="Whether to use xformers for memory efficient attention.",
+    )
+    parser.add_argument(
+        "--random_flip_h",
+        type=float,
+        default=0.0,
+        help="Probability of random horizontal flip.",
+    )
+    parser.add_argument(
+        "--random_flip_v",
+        type=float,
+        default=0.0,
+        help="Probability of random vertical flip.",
+    )
+    parser.add_argument(
+        "--window_size",
+        type=int,
+        default=32,
+        help="Window size for processing.",
+    )
+    parser.add_argument(
+        "--overlap",
+        type=int,
+        default=8,
+        help="Overlap size between windows.",
+    )
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        default=64,
+        help="Size of chunks for processing.",
+    )
+    parser.add_argument(
+        "--use_8bit_adam",
+        action="store_true",
+        help="Whether to use 8-bit Adam optimizer.",
+    )
+    parser.add_argument(
+        "--use_flash_attention",
+        action="store_true",
+        help="Whether to use flash attention.",
+    )
+    parser.add_argument(
+        "--vae_precision",
+        type=str,
+        default="fp16",
+        choices=["fp16", "bf16"],
+        help="Precision to use for VAE.",
+    )
+    parser.add_argument(
+        "--noise_range",
+        type=float,
+        nargs=2,
+        default=[0.0, 0.0],
+        help="Range for noise augmentation.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=8,
+        help="Number of workers for data loading.",
+    )
+    parser.add_argument(
+        "--eval_batch_size",
+        type=int,
+        default=4,
+        help="Batch size for evaluation.",
+    )
 
 
 def get_args():
@@ -479,5 +583,6 @@ def get_args():
     _get_validation_args(parser)
     _get_optimizer_args(parser)
     _get_configuration_args(parser)
+    _get_additional_args(parser)
 
     return parser.parse_args()
