@@ -603,7 +603,7 @@ class CogVideoXInpaintingPipeline:
         
         Args:
             video: Video tensor of shape [B, C, T, H, W]
-            boundary: Boundary position in pixels
+            boundary: Boundary position in pixels (at center of chunk overlap)
             window_size: Size of window to check around boundary (in pixels)
             
         Returns:

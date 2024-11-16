@@ -1300,15 +1300,16 @@ def test_resolution_scaling():
             print(f"Using chunks - Base size: {chunk_size}, Effective size: {effective_chunk}")
             print(f"Overlap: {overlap}, Number of chunks: {num_chunks}")
             
-            # Calculate expected chunk positions
+            # Calculate expected chunk positions and boundaries in pixel space
             chunk_starts = []
             chunk_boundaries = []
             for i in range(num_chunks):
                 start_w = max(0, i * effective_chunk - overlap)
                 chunk_starts.append(start_w)
-                if i > 0:  # Add boundary between this chunk and previous
-                    boundary = i * effective_chunk * 8  # Convert to pixel space
-                    if boundary < W * 8:  # Only if within image width
+                if i > 0:  # Add boundary between chunks
+                    # Boundary is at the center of overlap between chunks
+                    boundary = (i * effective_chunk) - (overlap // 2)
+                    if boundary < W:  # Only if within image width
                         chunk_boundaries.append(boundary)
             print(f"Chunk start positions: {chunk_starts}")
             print(f"Chunk boundaries: {chunk_boundaries}")
@@ -1339,7 +1340,7 @@ def test_resolution_scaling():
             
             for boundary in chunk_boundaries:
                 # Check a window around the boundary (in pixel space)
-                window_size = overlap * 2  # Use larger window to ensure we capture the transition
+                window_size = overlap  # Use overlap size as window
                 
                 # Use pipeline's boundary check method
                 mean_diff, max_diff = pipeline.check_boundary_continuity(decoded, boundary, window_size)
