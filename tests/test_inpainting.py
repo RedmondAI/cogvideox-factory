@@ -1627,37 +1627,37 @@ def test_training_components():
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
     
-    # Test with dimensions that ensure minimum 32x32 after VAE spatial ratio
+    # Test with dimensions matching model analysis test
     batch_size = 2
-    num_frames = model.config.sample_frames  # 49 frames
-    vae_min_dim = 32  # Minimum dimension needed by VAE
-    height = max(model.config.sample_height, vae_min_dim * 8)  # At least 256 pixels
-    width = max(model.config.sample_width, vae_min_dim * 8)    # At least 256 pixels
+    num_frames = 5  # Match model analysis test frames
+    height = 32     # Match model analysis test height
+    width = 32      # Match model analysis test width
     
     # VAE has 2.5x temporal compression and 8x spatial
     vae_temporal_ratio = 2.5
     vae_spatial_ratio = 8
     target_frames = int(num_frames * vae_temporal_ratio)
     
-    # Start with RGB frames [B, C, T, H, W]
+    # Start with RGB frames [B, C, T, H, W] - using exact dimensions from model analysis
     clean_frames = torch.randn(
-        batch_size, 3, target_frames,
-        height // vae_spatial_ratio,  # Will be at least 32 pixels
-        width // vae_spatial_ratio,   # Will be at least 32 pixels
+        batch_size, 3, target_frames, height, width,
         device=device, dtype=torch.float16
     )
     
     # Create mask for loss computation
     mask = torch.ones(
-        batch_size, 1, target_frames,
-        height // vae_spatial_ratio,
-        width // vae_spatial_ratio,
+        batch_size, 1, target_frames, height, width,
         device=device, dtype=torch.float16
     )
     
     # Test VAE encoding/decoding
     latent = vae.encode(clean_frames).latent_dist.sample()
+    assert latent.shape[2] == 2, f"Expected temporal compression to 2 frames, got {latent.shape[2]}"
+    assert latent.shape[3] == 4, f"Expected spatial compression to 4 pixels, got {latent.shape[3]}"
+    assert latent.shape[4] == 4, f"Expected spatial compression to 4 pixels, got {latent.shape[4]}"
+    
     decoded = vae.decode(latent)
+    assert decoded.shape[2] == 8, f"Expected temporal expansion to 8 frames, got {decoded.shape[2]}"
     
     # Handle potential temporal expansion
     if decoded.shape[2] > clean_frames.shape[2]:
