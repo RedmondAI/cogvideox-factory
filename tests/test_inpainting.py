@@ -65,7 +65,11 @@ def create_test_data(test_dir, sequence_name="sequence_001", num_frames=100, cor
 
 def test_dataset_initialization():
     """Test dataset initialization with various configurations."""
+    import shutil
+    
     test_dir = Path("assets/inpainting_test_init")
+    if test_dir.exists():
+        shutil.rmtree(test_dir)  # Remove old test data
     test_dir.mkdir(parents=True, exist_ok=True)
     
     # Create multiple test sequences for split testing
@@ -160,14 +164,21 @@ def test_dataset_initialization():
             overlap=16,
         )
     
+    # Cleanup
+    shutil.rmtree(test_dir)
+    
     print("Dataset initialization tests passed!")
 
 def test_memory_efficiency():
     """Test memory usage during dataset operations."""
     if not accelerator.is_main_process:
         return  # Only run memory test on main process
-        
+    
+    import shutil
+    
     test_dir = Path("assets/inpainting_test_memory")
+    if test_dir.exists():
+        shutil.rmtree(test_dir)  # Remove old test data
     test_dir.mkdir(parents=True, exist_ok=True)
     
     # Create multiple sequences for proper testing
@@ -207,6 +218,9 @@ def test_memory_efficiency():
     # Check memory is released
     assert max(memory_checkpoints) - initial_memory < 1000, \
         f"Memory usage increased by {max(memory_checkpoints) - initial_memory}MB"
+    
+    # Cleanup
+    shutil.rmtree(test_dir)
     
     print("Memory efficiency tests passed!")
 
@@ -318,9 +332,12 @@ def test_metrics():
 def test_dataset():
     """Test the VideoInpaintingDataset."""
     from dataset import VideoInpaintingDataset
+    import shutil
     
-    # Create test directory
+    # Create test directory (clean it first)
     test_dir = Path("assets/inpainting_test")
+    if test_dir.exists():
+        shutil.rmtree(test_dir)  # Remove old test data
     test_dir.mkdir(parents=True, exist_ok=True)
     create_test_data(test_dir, sequence_name="sequence_000")  # Create sequence with standard name
     
@@ -351,6 +368,9 @@ def test_dataset():
     assert item["rgb"].shape == (64, 3, 720, 1280), f"Wrong RGB shape: {item['rgb'].shape}"
     assert item["mask"].shape == (64, 1, 720, 1280), f"Wrong mask shape: {item['mask'].shape}"
     assert item["gt"].shape == (64, 3, 720, 1280), f"Wrong GT shape: {item['gt'].shape}"
+    
+    # Cleanup
+    shutil.rmtree(test_dir)
     
     print("Dataset test passed!")
 
