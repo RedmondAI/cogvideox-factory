@@ -6243,3 +6243,26 @@ def test_training_components():
         noise_pred_scheduler, noise, timesteps, scheduler,
         mask=None, noisy_frames=noisy_frames.permute(0, 2, 1, 3, 4)
     )
+
+if __name__ == "__main__":
+    print("\n=== Starting CogVideoX Inpainting Tests ===\n")
+    
+    tests = [test_vae_shapes, test_transformer_shapes, test_scheduler_config, 
+             test_end_to_end, test_resolution_scaling, test_memory_calculation, 
+             test_padding_edge_cases, test_metrics_cpu_fallback, test_loss_temporal,
+             test_text_conditioning, test_temporal_smoothing, test_temporal_smoothing_edge_cases,
+             test_training_components, test_rotary_embeddings, test_snr_rescaling,
+             test_dataset_initialization, test_memory_efficiency, test_padding,
+             test_metrics, test_dataset, test_model_modification, test_pipeline,
+             test_error_handling, test_edge_cases, test_training_step, test_full_training_cycle]
+    
+    for test in tests:
+        try:
+            print(f"Running {test.__name__}...")
+            test()
+            print(f"✓ Passed {test.__name__}\n")
+        except Exception as e:
+            print(f"\n❌ Failed {test.__name__}: {str(e)}")
+            raise
+            
+    print("\n=== All CogVideoX Inpainting Tests Passed! ===\n")
