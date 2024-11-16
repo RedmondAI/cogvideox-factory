@@ -803,7 +803,7 @@ def test_training_step():
     with torch.amp.autocast('cuda', enabled=True):
         # Add noise to latents
         noise = torch.randn_like(latents)
-        timesteps = torch.randint(0, noise_scheduler.num_train_timesteps, (latents.shape[0],))
+        timesteps = torch.randint(0, noise_scheduler.num_train_timesteps, (latents.shape[0],), device=latents.device)
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
         
         # Resize mask to match latent resolution
@@ -1355,10 +1355,16 @@ def test_resolution_scaling():
                 left_vals = decoded[..., left_start:left_end].float()
                 right_vals = decoded[..., right_start:right_end].float()
                 
-                # Calculate statistics across all dimensions except the last
-                mean_diff = (right_vals.mean(dim=list(range(right_vals.ndim-1))) - 
-                           left_vals.mean(dim=list(range(left_vals.ndim-1)))).abs().mean().item()
-                max_diff = (right_vals - left_vals).abs().amax(dim=list(range(right_vals.ndim-1))).mean().item()
+                # Calculate statistics by averaging over batch, channel, time, and height dimensions
+                reduce_dims = tuple(range(left_vals.ndim - 1))  # All dims except last
+                
+                # Calculate mean values along the seam
+                left_mean = left_vals.mean(dim=reduce_dims)
+                right_mean = right_vals.mean(dim=reduce_dims)
+                mean_diff = (right_mean - left_mean).abs().mean().item()
+                
+                # Calculate max difference along the seam
+                max_diff = (right_vals - left_vals).abs().mean(dim=reduce_dims).max().item()
                 
                 print(f"Boundary {boundary}:")
                 print(f"  Window: [{left_start}:{left_end}] - [{right_start}:{right_end}]")

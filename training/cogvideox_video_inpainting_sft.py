@@ -359,10 +359,10 @@ class CogVideoXInpaintingPipeline:
                 # Create blending weights
                 weight = torch.ones_like(chunk_latents)
                 if i > 0:  # Left overlap
-                    left_size = overlap // 8
+                    left_size = overlap // 8  # Convert to latent space
                     weight[..., :left_size] = torch.linspace(0, 1, left_size, device=weight.device).view(1, 1, 1, 1, -1)
                 if i < num_chunks - 1:  # Right overlap
-                    right_size = overlap // 8
+                    right_size = overlap // 8  # Convert to latent space
                     weight[..., -right_size:] = torch.linspace(1, 0, right_size, device=weight.device).view(1, 1, 1, 1, -1)
                 
                 chunks.append(chunk_latents)
@@ -427,7 +427,7 @@ class CogVideoXInpaintingPipeline:
                 chunk_latents = 1 / self.vae.config.scaling_factor * chunk_latents
                 chunk_video = self.vae.decode(chunk_latents).sample
                 
-                # Create blending weights for exact chunk width
+                # Create blending weights
                 weight = torch.ones_like(chunk_video)
                 if i > 0:  # Left overlap
                     left_size = overlap
