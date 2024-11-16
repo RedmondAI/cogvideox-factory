@@ -1059,7 +1059,10 @@ def main(args):
     )
     
     # Initialize gradient scaler for mixed precision
-    scaler = GradScaler(enabled=args.mixed_precision == "fp16")
+    if args.mixed_precision == "fp16":
+        scaler = GradScaler("cuda")
+    else:
+        scaler = None
     
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps

@@ -34,6 +34,14 @@ def get_args():
     parser.add_argument("--validation_steps", type=int, default=500)
     parser.add_argument("--logging_dir", type=str, default="logs")
     
+    # Validation and inference settings
+    parser.add_argument("--num_inference_steps", type=int, default=50)
+    parser.add_argument("--validation_guidance_scale", type=float, default=7.5)
+    parser.add_argument("--validation_prompt", type=str, default="")
+    parser.add_argument("--validation_batch_size", type=int, default=4)
+    parser.add_argument("--validation_images", type=int, default=4)
+    parser.add_argument("--validation_scheduler", type=str, default="ddpm")
+    
     # Optimization settings
     parser.add_argument("--mixed_precision", type=str, choices=["no", "fp16", "bf16"], default="bf16")
     parser.add_argument("--gradient_checkpointing", action="store_true")
