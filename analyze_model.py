@@ -195,9 +195,10 @@ def analyze_transformer(transformer):
         "num_attention_heads": config.get("num_attention_heads"),
         "num_layers": config.get("num_layers"),
         "patch_size": config.get("patch_size"),
-        "cross_attention_dim": config.get("cross_attention_dim"),
         "attention_head_dim": config.get("attention_head_dim"),
-        "num_hidden_layers": config.get("num_hidden_layers"),
+        "text_embed_dim": config.get("text_embed_dim"),
+        "time_embed_dim": config.get("time_embed_dim"),
+        "temporal_compression_ratio": config.get("temporal_compression_ratio"),
     }
     
     for key, value in architecture_details.items():
@@ -237,16 +238,29 @@ def analyze_transformer(transformer):
     # Test forward pass with correct shape
     print("\nTesting forward pass...")
     logger.info("\nTesting Forward Pass:")
+    
+    # Create test inputs
     B, T, C, H, W = 1, 5, in_channels, 32, 32
     test_input = torch.randn(B, T, C, H, W, device=transformer.device, dtype=transformer.dtype)
     timesteps = torch.zeros(B, dtype=torch.long, device=transformer.device)
-    print(f"Created test input with shape: {test_input.shape}")
+    
+    # Create encoder hidden states based on text_embed_dim
+    text_embed_dim = config.get("text_embed_dim", 4096)
+    encoder_hidden_states = torch.randn(B, T, text_embed_dim, device=transformer.device, dtype=transformer.dtype)
+    
+    print(f"Created test inputs:")
+    print(f"  Input shape: {test_input.shape}")
+    print(f"  Encoder hidden states shape: {encoder_hidden_states.shape}")
     
     with torch.no_grad():
         try:
             print("Attempting forward pass with [B, T, C, H, W] format...")
             start_time = time.time()
-            output = transformer(test_input, timestep=timesteps)
+            output = transformer(
+                test_input,
+                timestep=timesteps,
+                encoder_hidden_states=encoder_hidden_states
+            )
             end_time = time.time()
             print(f"Forward pass took {end_time - start_time:.2f} seconds")
             
@@ -268,7 +282,11 @@ def analyze_transformer(transformer):
             test_input_alt = test_input.permute(0, 2, 1, 3, 4)  # Try different permutation
             logger.info(f"Trying alternative input shape: {test_input_alt.shape}")
             start_time = time.time()
-            output = transformer(test_input_alt, timestep=timesteps)
+            output = transformer(
+                test_input_alt,
+                timestep=timesteps,
+                encoder_hidden_states=encoder_hidden_states
+            )
             end_time = time.time()
             print(f"Alternative forward pass took {end_time - start_time:.2f} seconds")
             
