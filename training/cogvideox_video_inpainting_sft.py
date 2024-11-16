@@ -598,6 +598,45 @@ class CogVideoXInpaintingPipeline:
         
         return video
 
+    def check_boundary_continuity(self, video: torch.Tensor, boundary: int, window_size: int) -> Tuple[float, float]:
+        """Check continuity at a chunk boundary.
+        
+        Args:
+            video: Video tensor of shape [B, C, T, H, W]
+            boundary: Boundary position in pixels
+            window_size: Size of window to check around boundary
+            
+        Returns:
+            Tuple of (mean_diff, max_diff) at the boundary
+        """
+        # Ensure window is within bounds
+        left_start = max(0, boundary - window_size)
+        left_end = boundary
+        right_start = boundary
+        right_end = min(video.shape[-1], boundary + window_size)
+        
+        if left_start >= left_end or right_start >= right_end:
+            return 0.0, 0.0  # Skip if window is invalid
+        
+        # Get values around boundary
+        left_vals = video[..., left_start:left_end]
+        right_vals = video[..., right_start:right_end]
+        
+        # Reshape tensors to combine all dimensions except the last
+        left_flat = left_vals.reshape(-1, left_vals.shape[-1])
+        right_flat = right_vals.reshape(-1, right_vals.shape[-1])
+        
+        # Calculate mean values along the seam
+        left_mean = left_flat.mean(dim=0)
+        right_mean = right_flat.mean(dim=0)
+        mean_diff = (right_mean - left_mean).abs().mean().item()
+        
+        # Calculate max difference along the seam
+        diff_flat = (right_flat - left_flat).abs()
+        max_diff = diff_flat.mean(dim=0).max().item()
+        
+        return mean_diff, max_diff
+
 def collate_fn(examples):
     rgb = torch.stack([example["rgb"] for example in examples])
     mask = torch.stack([example["mask"] for example in examples])

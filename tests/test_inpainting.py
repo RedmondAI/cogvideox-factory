@@ -1352,19 +1352,21 @@ def test_resolution_scaling():
                     continue
                 
                 # Get values around boundary
-                left_vals = decoded[..., left_start:left_end].float()
-                right_vals = decoded[..., right_start:right_end].float()
+                left_vals = decoded[..., left_start:left_end]
+                right_vals = decoded[..., right_start:right_end]
                 
-                # Calculate statistics by averaging over batch, channel, time, and height dimensions
-                reduce_dims = tuple(range(left_vals.ndim - 1))  # All dims except last
+                # Reshape tensors to combine all dimensions except the last
+                left_flat = left_vals.reshape(-1, left_vals.shape[-1])
+                right_flat = right_vals.reshape(-1, right_vals.shape[-1])
                 
                 # Calculate mean values along the seam
-                left_mean = left_vals.mean(dim=reduce_dims)
-                right_mean = right_vals.mean(dim=reduce_dims)
+                left_mean = left_flat.mean(dim=0)
+                right_mean = right_flat.mean(dim=0)
                 mean_diff = (right_mean - left_mean).abs().mean().item()
                 
                 # Calculate max difference along the seam
-                max_diff = (right_vals - left_vals).abs().mean(dim=reduce_dims).max().item()
+                diff_flat = (right_flat - left_flat).abs()
+                max_diff = diff_flat.mean(dim=0).max().item()
                 
                 print(f"Boundary {boundary}:")
                 print(f"  Window: [{left_start}:{left_end}] - [{right_start}:{right_end}]")
