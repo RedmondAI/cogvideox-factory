@@ -10,6 +10,7 @@ def get_args():
     parser.add_argument("--pretrained_model_name_or_path", type=str, required=True)
     parser.add_argument("--revision", type=str, default=None)
     parser.add_argument("--variant", type=str, default=None)
+    parser.add_argument("--local_rank", type=int, default=0)  # Add local_rank for distributed training
     
     # Data configuration
     parser.add_argument("--data_root", type=str, required=True)

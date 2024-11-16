@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Configure DeepSpeed launch
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
 # Model configuration
 PRETRAINED_MODEL_NAME_OR_PATH="THUDM/CogVideoX-5b"
 OUTPUT_DIR="./cogvideox-inpainting"
@@ -80,39 +83,38 @@ done
 # Create output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
 
-# Run training
-deepspeed --include localhost:0,1,2,3,4,5,6,7 \
-  training/cogvideox_video_inpainting_sft.py \
-  --pretrained_model_name_or_path=$PRETRAINED_MODEL_NAME_OR_PATH \
-  --output_dir=$OUTPUT_DIR \
-  --data_root=$DATA_ROOT \
-  --video_dir=$VIDEO_DIR \
-  --mask_dir=$MASK_DIR \
-  --gt_dir=$GT_DIR \
-  --image_size=$IMAGE_SIZE \
-  --train_batch_size=$TRAIN_BATCH_SIZE \
-  --gradient_accumulation_steps=$GRADIENT_ACCUMULATION_STEPS \
-  --max_num_frames=$MAX_NUM_FRAMES \
-  --num_train_epochs=$NUM_TRAIN_EPOCHS \
-  --learning_rate=$LEARNING_RATE \
-  --lr_warmup_steps=$LR_WARMUP_STEPS \
-  --checkpointing_steps=$CHECKPOINTING_STEPS \
-  --validation_steps=$VALIDATION_STEPS \
-  --mixed_precision=$MIXED_PRECISION \
-  --enable_xformers_memory_efficient_attention \
-  --random_flip_h=$RANDOM_FLIP_H \
-  --random_flip_v=$RANDOM_FLIP_V \
-  --window_size=$WINDOW_SIZE \
-  --overlap=$OVERLAP \
-  --chunk_size=$CHUNK_SIZE \
-  --use_8bit_adam \
-  --use_flash_attention \
-  --gradient_checkpointing \
-  --vae_precision=$VAE_PRECISION \
-  --enable_model_cpu_offload \
-  --enable_slicing \
-  --enable_tiling \
-  --allow_tf32 \
-  --report_to=wandb \
-  --dataloader_num_workers=$NUM_WORKERS \
-  --deepspeed_config=configs/zero3.json
+# Launch training with proper argument format
+deepspeed training/cogvideox_video_inpainting_sft.py \
+    --pretrained_model_name_or_path $PRETRAINED_MODEL_NAME_OR_PATH \
+    --output_dir $OUTPUT_DIR \
+    --data_root $DATA_ROOT \
+    --video_dir $VIDEO_DIR \
+    --mask_dir $MASK_DIR \
+    --gt_dir $GT_DIR \
+    --image_size $IMAGE_SIZE \
+    --train_batch_size $TRAIN_BATCH_SIZE \
+    --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
+    --max_num_frames $MAX_NUM_FRAMES \
+    --num_train_epochs $NUM_TRAIN_EPOCHS \
+    --learning_rate $LEARNING_RATE \
+    --lr_warmup_steps $LR_WARMUP_STEPS \
+    --checkpointing_steps $CHECKPOINTING_STEPS \
+    --validation_steps $VALIDATION_STEPS \
+    --mixed_precision $MIXED_PRECISION \
+    --enable_xformers_memory_efficient_attention \
+    --random_flip_h $RANDOM_FLIP_H \
+    --random_flip_v $RANDOM_FLIP_V \
+    --window_size $WINDOW_SIZE \
+    --overlap $OVERLAP \
+    --chunk_size $CHUNK_SIZE \
+    --use_8bit_adam \
+    --use_flash_attention \
+    --gradient_checkpointing \
+    --vae_precision $VAE_PRECISION \
+    --enable_model_cpu_offload \
+    --enable_slicing \
+    --enable_tiling \
+    --allow_tf32 \
+    --report_to wandb \
+    --dataloader_num_workers $NUM_WORKERS \
+    --deepspeed_config configs/zero3.json
