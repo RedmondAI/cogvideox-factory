@@ -23,23 +23,12 @@ IMAGE_SIZE=720
 
 # Model settings
 MIXED_PRECISION="bf16"  # Using bfloat16 for better numerical stability
-ENABLE_XFORMERS_MEMORY_EFFICIENT_ATTENTION=true
 RANDOM_FLIP_H=0.5
 RANDOM_FLIP_V=0.5
 WINDOW_SIZE=32
 OVERLAP=8
 CHUNK_SIZE=64  # Increased for more efficient processing
-
-# Memory optimizations
-USE_8BIT_ADAM=true
-USE_FLASH_ATTENTION=true
-GRADIENT_CHECKPOINTING="--gradient_checkpointing"  # Fixed flag
 VAE_PRECISION="bf16"  # Changed to match mixed precision setting
-ENABLE_MODEL_CPU_OFFLOAD="--enable_model_cpu_offload"  # Fixed flag
-ENABLE_SLICING="--enable_slicing"  # Fixed flag
-ENABLE_TILING="--enable_tiling"  # Fixed flag
-
-# Performance settings
 NUM_WORKERS=8
 
 # Parse command line arguments
@@ -110,19 +99,19 @@ deepspeed --include localhost:0,1,2,3,4,5,6,7 \
   --checkpointing_steps=$CHECKPOINTING_STEPS \
   --validation_steps=$VALIDATION_STEPS \
   --mixed_precision=$MIXED_PRECISION \
-  --enable_xformers_memory_efficient_attention=$ENABLE_XFORMERS_MEMORY_EFFICIENT_ATTENTION \
+  --enable_xformers_memory_efficient_attention \
   --random_flip_h=$RANDOM_FLIP_H \
   --random_flip_v=$RANDOM_FLIP_V \
   --window_size=$WINDOW_SIZE \
   --overlap=$OVERLAP \
   --chunk_size=$CHUNK_SIZE \
-  --use_8bit_adam=$USE_8BIT_ADAM \
-  --use_flash_attention=$USE_FLASH_ATTENTION \
-  $GRADIENT_CHECKPOINTING \
+  --use_8bit_adam \
+  --use_flash_attention \
+  --gradient_checkpointing \
   --vae_precision=$VAE_PRECISION \
-  $ENABLE_MODEL_CPU_OFFLOAD \
-  $ENABLE_SLICING \
-  $ENABLE_TILING \
+  --enable_model_cpu_offload \
+  --enable_slicing \
+  --enable_tiling \
   --allow_tf32 \
   --report_to=wandb \
   --dataloader_num_workers=$NUM_WORKERS \
