@@ -733,8 +733,11 @@ def train_loop(
                 
             with accelerator.accumulate(model):
                 # Get input tensors and ensure correct dtype
-                clean_frames = batch["rgb"].to(dtype=model_dtype)
+                clean_frames = batch["rgb"].to(dtype=model_dtype)  # [B, 3, T, H, W]
                 mask = batch["mask"].to(dtype=model_dtype)
+                
+                # Convert RGB frames to latent space (16 channels)
+                clean_frames = model.patch_embed.proj(clean_frames)  # [B, 16, T, H, W]
                 
                 # Sample noise and add to frames
                 noise = torch.randn_like(clean_frames)

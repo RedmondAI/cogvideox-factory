@@ -1617,9 +1617,10 @@ def test_training_components():
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
     
-    # Test noise addition
+    # Test noise addition with correct shapes
     batch_size = 2
-    clean_frames = torch.randn(batch_size, 3, 8, 64, 64, device=device, dtype=torch.float16)
+    # Model expects [B, C, T, H, W] with C=16 channels
+    clean_frames = torch.randn(batch_size, 16, 8, 64, 64, device=device, dtype=torch.float16)
     noise = torch.randn_like(clean_frames)
     timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (batch_size,), device=device)
     noisy_frames = scheduler.add_noise(clean_frames, noise, timesteps)
