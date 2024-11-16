@@ -754,11 +754,23 @@ def gelu_approximate(x):
     return x * 0.5 * (1.0 + torch.tanh(0.7978845608028654 * x * (1 + 0.044715 * x * x)))
 
 def handle_vae_temporal_output(decoded, target_frames):
-    """Handle potential temporal expansion from VAE."""
-    if decoded.shape[2] > target_frames:
+    """Handle potential temporal expansion from VAE.
+    
+    Args:
+        decoded: Tensor from VAE decoder with shape [B, C, T, H, W]
+        target_frames: Number of frames expected in output
+        
+    Returns:
+        Tensor with target number of frames [B, C, target_frames, H, W]
+    """
+    if decoded.shape[2] != target_frames:
         # Take center frames if output is expanded
         start_idx = (decoded.shape[2] - target_frames) // 2
-        return decoded[:, :, start_idx:start_idx + target_frames]
+        decoded = decoded[:, :, start_idx:start_idx + target_frames]
+        
+    assert decoded.shape[2] == target_frames, \
+        f"VAE output frames {decoded.shape[2]} doesn't match target frames {target_frames}"
+    
     return decoded
 
 def apply_rotary_pos_emb(x, cos, sin, position_ids):
@@ -813,6 +825,10 @@ def train_loop(
     # Get model dtype and config
     model_dtype = next(model.parameters()).dtype
     
+    # Enable gradient checkpointing for memory efficiency
+    model.gradient_checkpointing_enable()
+    assert model.is_gradient_checkpointing, "Gradient checkpointing should be enabled"
+    
     # Verify model configuration
     assert model.config.use_rotary_positional_embeddings, "Rotary embeddings should be enabled"
     assert not model.config.use_learned_positional_embeddings, "Learned embeddings should be disabled"
@@ -821,9 +837,9 @@ def train_loop(
     assert model.config.norm_elementwise_affine, "Layer norm should use elementwise affine"
     assert model.config.norm_eps == 1e-5, f"Unexpected norm epsilon: {model.config.norm_eps}"
     
-    # VAE has 2.5x temporal compression and 8x spatial
-    vae_temporal_ratio = 2.5
+    # VAE has fixed 8-frame output and 8x spatial downsampling
     vae_spatial_ratio = 8
+    target_frames = model.config.sample_frames  # Use model's native frame count
     
     # Create rotary embedding cache
     max_position_embeddings = 512
@@ -854,35 +870,29 @@ def train_loop(
                 clean_frames = batch["rgb"].to(dtype=model_dtype)  # [B, C, T, H, W]
                 mask = batch["mask"].to(dtype=model_dtype)
                 
-                # Calculate required input frames for VAE
+                # Validate input dimensions
                 B, C, T, H, W = clean_frames.shape
-                target_frames = int(T * vae_temporal_ratio)
+                assert H % vae_spatial_ratio == 0 and W % vae_spatial_ratio == 0, \
+                    f"Input dimensions ({H}, {W}) must be divisible by VAE ratio {vae_spatial_ratio}"
                 
-                # Adjust temporal and spatial dimensions
-                if T != target_frames:
-                    clean_frames = F.interpolate(
-                        clean_frames,
-                        size=(target_frames, H//vae_spatial_ratio, W//vae_spatial_ratio),
-                        mode='trilinear',
-                        align_corners=False
-                    )
-                else:
-                    # Just handle spatial downsampling
-                    clean_frames = F.interpolate(
-                        clean_frames,
-                        size=(T, H//vae_spatial_ratio, W//vae_spatial_ratio),
-                        mode='bilinear',
-                        align_corners=False
-                    )
+                # Handle spatial downsampling
+                clean_frames = F.interpolate(
+                    clean_frames,
+                    size=(T, H//vae_spatial_ratio, W//vae_spatial_ratio),
+                    mode='bilinear',
+                    align_corners=False
+                )
                 
                 # Test VAE encoding/decoding and handle temporal expansion
                 latent = vae.encode(clean_frames).latent_dist.sample()
-                decoded = vae.decode(latent)
-                decoded = handle_vae_temporal_output(decoded, clean_frames.shape[2])
+                decoded = vae.decode(latent).sample
                 
-                # Verify temporal dimension matches
-                assert decoded.shape[2] == clean_frames.shape[2], \
-                    f"VAE output frames {decoded.shape[2]} doesn't match input frames {clean_frames.shape[2]}"
+                # Handle fixed 8-frame VAE output
+                decoded = handle_vae_temporal_output(decoded, T)
+                
+                # Verify no NaN values from VAE
+                assert not torch.isnan(latent).any(), "VAE latent contains NaN values"
+                assert not torch.isnan(decoded).any(), "VAE output contains NaN values"
                 
                 # Convert to [B, T, C, H, W] format for transformer
                 clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]

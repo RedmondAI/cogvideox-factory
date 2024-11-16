@@ -133,13 +133,11 @@ def test_training_components():
     decoded = vae.decode(latent).sample  # Access .sample attribute
     
     # Handle fixed 8-frame output from VAE
-    if decoded.shape[2] != clean_frames.shape[2]:
-        # Take center frames if output is expanded
-        start_idx = (decoded.shape[2] - clean_frames.shape[2]) // 2
-        decoded = decoded[:, :, start_idx:start_idx + clean_frames.shape[2]]
+    decoded = handle_vae_temporal_output(decoded, clean_frames.shape[2])
     
-    assert decoded.shape[2] == clean_frames.shape[2], \
-        f"VAE output frames {decoded.shape[2]} doesn't match input frames {clean_frames.shape[2]}"
+    # Verify no NaN values from VAE
+    assert not torch.isnan(latent).any(), "VAE latent contains NaN values"
+    assert not torch.isnan(decoded).any(), "VAE output contains NaN values"
     
     # Convert to [B, T, C, H, W] format for transformer
     clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
