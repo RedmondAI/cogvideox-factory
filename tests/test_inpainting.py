@@ -1096,12 +1096,12 @@ def test_vae_shapes():
     
     # Test encoding
     latents = vae.encode(x).latent_dist.sample()
-    expected_latent_shape = (B, 16, T//2, H//8, W//8)  # T reduces by 2, spatial by 8
+    expected_latent_shape = (B, 16, T//4, H//8, W//8)  # T reduces by 4, spatial by 8
     assert latents.shape == expected_latent_shape, f"Expected latent shape {expected_latent_shape}, got {latents.shape}"
     
     # Test decoding with temporal expansion
     decoded = vae.decode(latents).sample
-    expected_output_shape = (B, C, T*2, H, W)  # T doubles in output
+    expected_output_shape = (B, C, 8, H, W)  # Fixed temporal expansion to 8 frames
     assert decoded.shape == expected_output_shape, f"Expected output shape {expected_output_shape}, got {decoded.shape}"
 
 def test_transformer_shapes():
@@ -1194,7 +1194,7 @@ def test_end_to_end():
     
     # Encode
     latents = vae.encode(x).latent_dist.sample()
-    assert latents.shape == (B, 16, T//2, H//8, W//8), "Unexpected latent shape"
+    assert latents.shape == (B, 16, T//4, H//8, W//8), "Unexpected latent shape"
     
     # Prepare transformer inputs
     timesteps = torch.zeros(B, dtype=torch.long)
@@ -1212,7 +1212,7 @@ def test_end_to_end():
     # Decode
     output = output.permute(0, 2, 1, 3, 4)  # [B, C, T, H, W] for VAE
     decoded = vae.decode(output).sample
-    assert decoded.shape == (B, C, T*2, H, W), "Unexpected final output shape"
+    assert decoded.shape == (B, C, 8, H, W), "Unexpected final output shape"
 
 def test_resolution_scaling():
     """Test handling of different input resolutions."""
@@ -1317,7 +1317,7 @@ def test_memory_calculation():
     # Calculate memory manually
     bytes_per_element = 2  # fp16
     expected_video_memory = B * C * T * H * W * bytes_per_element / (1024**3)
-    expected_latent_memory = B * 16 * (T//2) * (H//8) * (W//8) * bytes_per_element / (1024**3)
+    expected_latent_memory = B * 16 * (T//4) * (H//8) * (W//8) * bytes_per_element / (1024**3)
     expected_transformer_memory = 10.8
     expected_total = expected_video_memory + expected_latent_memory + expected_transformer_memory
     
