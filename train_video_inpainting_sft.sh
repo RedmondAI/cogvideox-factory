@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default values for the script
-PRETRAINED_MODEL_NAME_OR_PATH="cogvideo-5b"
+PRETRAINED_MODEL_NAME_OR_PATH="THUDM/CogVideoX-5b"  # Using 5b model for better quality outputs
 OUTPUT_DIR="video-inpainting-model"
 DATA_ROOT="/var/lib/docker/dataset/"
 TRAIN_BATCH_SIZE=2
@@ -12,12 +12,7 @@ LEARNING_RATE=1e-5
 LR_WARMUP_STEPS=100
 CHECKPOINTING_STEPS=500
 VALIDATION_STEPS=100
-MIXED_PRECISION="fp16"
-ENABLE_XFORMERS_MEMORY_EFFICIENT_ATTENTION=True
-RANDOM_FLIP_H=0.5
-RANDOM_FLIP_V=0.5
-
-# Memory and processing parameters optimized for 80GB A100s
+MIXED_PRECISION="bf16"  # Using bfloat16 since CogVideoX-5b weights are stored in bf16
 WINDOW_SIZE=64
 OVERLAP=16
 CHUNK_SIZE=64
