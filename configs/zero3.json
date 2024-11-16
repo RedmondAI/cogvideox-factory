@@ -14,8 +14,8 @@
         "memory_efficient_linear": true
     },
     "gradient_clipping": 1.0,
-    "train_batch_size": 32,
-    "train_micro_batch_size_per_gpu": 4,
+    "train_batch_size": 32,  # Total batch size across all GPUs (4 per GPU * 8 GPUs)
+    "train_micro_batch_size_per_gpu": 4,  # Matches shell script TRAIN_BATCH_SIZE
     "wall_clock_breakdown": false,
     "flops_profiler": {
         "enabled": false

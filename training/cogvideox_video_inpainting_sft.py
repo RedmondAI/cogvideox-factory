@@ -172,9 +172,12 @@ class CogVideoXInpaintingPipeline:
             overlap: Overlap size between chunks for smooth blending
             
         Returns:
-            Latent tensor of shape [B, C, T//2, H//8, W//8]
+            Latent tensor of shape [B, C, T//temporal_ratio, H//8, W//8]
+            where temporal_ratio is from transformer config
         """
         B, C, T, H, W = x.shape
+        temporal_ratio = self.transformer.config.temporal_compression_ratio
+        vae_spatial_ratio = 8
         
         # Process in chunks if input is large
         if chunk_size is not None and W > chunk_size:
@@ -202,10 +205,10 @@ class CogVideoXInpaintingPipeline:
                 # Create blending weights
                 weight = torch.ones_like(chunk_latents)
                 if i > 0:  # Left overlap
-                    left_size = overlap // 8  # Convert to latent space
+                    left_size = overlap // vae_spatial_ratio  # Convert to latent space
                     weight[..., :left_size] = torch.linspace(0, 1, left_size, device=weight.device).view(1, 1, 1, 1, -1)
                 if i < num_chunks - 1:  # Right overlap
-                    right_size = overlap // 8  # Convert to latent space
+                    right_size = overlap // vae_spatial_ratio  # Convert to latent space
                     weight[..., -right_size:] = torch.linspace(1, 0, right_size, device=weight.device).view(1, 1, 1, 1, -1)
                 
                 chunks.append(chunk_latents)
@@ -215,11 +218,15 @@ class CogVideoXInpaintingPipeline:
                 torch.cuda.empty_cache()
             
             # Blend chunks with weights
-            final_latents = torch.zeros(B, 16, T//2, H//8, W//8, device=x.device, dtype=torch.float16)
+            final_latents = torch.zeros(
+                B, self.transformer.config.in_channels, 
+                T//temporal_ratio, H//vae_spatial_ratio, W//vae_spatial_ratio,
+                device=x.device, dtype=torch.float16
+            )
             weight_sum = torch.zeros_like(final_latents)
             
             for chunk, weight, start_w in zip(chunks, weights, chunk_starts):
-                start_idx = start_w // 8  # Convert to latent space
+                start_idx = start_w // vae_spatial_ratio  # Convert to latent space
                 chunk_width = chunk.shape[-1]
                 final_latents[..., start_idx:start_idx + chunk_width] += chunk * weight
                 weight_sum[..., start_idx:start_idx + chunk_width] += weight
@@ -321,17 +328,17 @@ class CogVideoXInpaintingPipeline:
         width: int,
         generator: Optional[torch.Generator] = None,
     ) -> torch.Tensor:
-        """Prepare random latents accounting for VAE's temporal compression."""
-        # Apply VAE's compression ratios
-        vae_temporal_ratio = 4  # VAE's temporal compression ratio
+        """Prepare random latents accounting for temporal and spatial compression."""
+        # Get compression ratios from model configs
+        temporal_ratio = self.transformer.config.temporal_compression_ratio
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
         
         latents_shape = (
             batch_size, 
             self.transformer.config.in_channels, 
-            num_frames//vae_temporal_ratio,  # VAE temporal compression (4x)
-            height//vae_spatial_ratio,       # VAE spatial compression (8x)
-            width//vae_spatial_ratio         # VAE spatial compression (8x)
+            num_frames//temporal_ratio,  # Temporal compression from transformer config
+            height//vae_spatial_ratio,   # VAE spatial compression (8x)
+            width//vae_spatial_ratio     # VAE spatial compression (8x)
         )
         latents = torch.randn(latents_shape, generator=generator, device=self.device, dtype=self.dtype)
         latents = latents * self.scheduler.init_noise_sigma
@@ -344,15 +351,15 @@ class CogVideoXInpaintingPipeline:
             mask: Binary mask of shape [B, 1, T, H, W]
             
         Returns:
-            Processed mask of shape [B, 1, T//4, H//8, W//8]
-            where 4 is VAE's temporal compression ratio and 8 is spatial compression
+            Processed mask of shape [B, 1, T//temporal_ratio, H//8, W//8]
+            where temporal_ratio is from transformer config and 8 is VAE's spatial compression
         """
-        # Apply VAE's temporal and spatial compression ratios
-        vae_temporal_ratio = 4  # VAE's temporal compression ratio
+        # Use transformer's temporal compression ratio and VAE's spatial ratio
+        temporal_ratio = self.transformer.config.temporal_compression_ratio
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
         
         mask = F.interpolate(mask, size=(
-            mask.shape[2]//vae_temporal_ratio,  # VAE temporal compression (4x)
+            mask.shape[2]//temporal_ratio,  # Temporal compression from transformer config
             mask.shape[3]//vae_spatial_ratio,   # VAE spatial compression (8x)
             mask.shape[4]//vae_spatial_ratio    # VAE spatial compression (8x)
         ), mode='nearest')

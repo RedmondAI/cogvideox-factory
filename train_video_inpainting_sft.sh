@@ -6,9 +6,9 @@ OUTPUT_DIR="./cogvideox-inpainting"
 DATA_ROOT="./data/inpainting"
 
 # Training hyperparameters
-TRAIN_BATCH_SIZE=1
-GRADIENT_ACCUMULATION_STEPS=4
-MAX_NUM_FRAMES=64
+TRAIN_BATCH_SIZE=4  # Increased to match deepspeed config
+GRADIENT_ACCUMULATION_STEPS=8  # Adjusted for total batch size of 32
+MAX_NUM_FRAMES=49  # Set to match model's native frame count
 NUM_TRAIN_EPOCHS=100
 LEARNING_RATE=1e-5
 LR_WARMUP_STEPS=1000
@@ -16,19 +16,19 @@ CHECKPOINTING_STEPS=2000
 VALIDATION_STEPS=500
 
 # Model settings
-MIXED_PRECISION="bf16"
+MIXED_PRECISION="bf16"  # Using bfloat16 for better numerical stability
 ENABLE_XFORMERS_MEMORY_EFFICIENT_ATTENTION=true
 RANDOM_FLIP_H=0.5
 RANDOM_FLIP_V=0.5
 WINDOW_SIZE=32
 OVERLAP=8
-CHUNK_SIZE=4
+CHUNK_SIZE=64  # Increased for more efficient processing
 
 # Memory optimizations
 USE_8BIT_ADAM=true
 USE_FLASH_ATTENTION=true
 GRADIENT_CHECKPOINTING=true
-VAE_PRECISION="fp32"
+VAE_PRECISION="bf16"  # Changed to match mixed precision setting
 USE_CPU_OFFLOAD=true
 ENABLE_SLICING=true
 ENABLE_TILING=true
