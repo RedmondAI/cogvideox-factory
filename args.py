@@ -39,6 +39,11 @@ def get_args():
     parser.add_argument("--use_8bit_adam", action="store_true")
     parser.add_argument("--use_flash_attention", action="store_true")
     parser.add_argument("--vae_precision", type=str, default="fp16")
+    parser.add_argument("--beta1", type=float, default=0.9)
+    parser.add_argument("--beta2", type=float, default=0.999)
+    parser.add_argument("--weight_decay", type=float, default=1e-2)
+    parser.add_argument("--epsilon", type=float, default=1e-8)
+    parser.add_argument("--lr_scheduler", type=str, default="constant")
     
     # Processing settings
     parser.add_argument("--window_size", type=int, default=32)
