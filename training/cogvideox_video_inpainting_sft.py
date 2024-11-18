@@ -391,7 +391,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             raise ValueError(f"Expected {expected_temporal_frames} frames after compression, got {latents.shape[2]}")
         
         return latents
-        
+    
     except Exception as e:
         logger.error(f"Error in encode: {str(e)}")
         logger.error(f"Stack trace: {traceback.format_exc()}")
