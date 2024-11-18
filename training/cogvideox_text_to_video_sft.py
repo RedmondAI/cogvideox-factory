@@ -195,15 +195,30 @@ def log_validation(
 
 
 class CollateFunction:
-    def __init__(self, weight_dtype: torch.dtype, load_tensors: bool) -> None:
+    def __init__(self, weight_dtype: torch.dtype, load_tensors: bool, tokenizer=None, text_encoder=None) -> None:
         self.weight_dtype = weight_dtype
         self.load_tensors = load_tensors
+        self.tokenizer = tokenizer
+        self.text_encoder = text_encoder
 
     def __call__(self, data: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         prompts = [x["prompt"] for x in data[0]]
 
         if self.load_tensors:
+            # Pre-computed embeddings
             prompts = torch.stack(prompts).to(dtype=self.weight_dtype, non_blocking=True)
+        else:
+            # Compute embeddings on-the-fly
+            with torch.no_grad():
+                text_inputs = self.tokenizer(
+                    prompts,
+                    padding="max_length",
+                    max_length=226,  # Default max sequence length
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                prompt_embeds = self.text_encoder(text_inputs.input_ids)[0]
+                prompts = prompt_embeds.to(dtype=self.weight_dtype, non_blocking=True)
 
         videos = [x["video"] for x in data[0]]
         videos = torch.stack(videos).to(dtype=self.weight_dtype, non_blocking=True)
@@ -478,7 +493,7 @@ def main(args):
             video_reshape_mode=args.video_reshape_mode, **dataset_init_kwargs
         )
 
-    collate_fn = CollateFunction(weight_dtype, args.load_tensors)
+    collate_fn = CollateFunction(weight_dtype, args.load_tensors, tokenizer, text_encoder)
 
     train_dataloader = DataLoader(
         train_dataset,
