@@ -101,19 +101,19 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         self.overlap = getattr(args, 'overlap', 8) if args else 8
         self.max_resolution = getattr(args, 'max_resolution', 2048) if args else 2048
         
-        # Store original configs
-        self._transformer_config = transformer.config
-        self._vae_config = vae.config
+        # Store model references
+        self.transformer = transformer
+        self.vae = vae
     
     @property
     def transformer_config(self):
         """Get transformer config."""
-        return self._transformer_config
+        return self.transformer.config
     
     @property
     def vae_config(self):
         """Get VAE config."""
-        return self._vae_config
+        return self.vae.config
     
     def _calculate_scaling(self, height: int, width: int, num_frames: int):
         """Calculate scaling factors between input and model dimensions."""
@@ -274,8 +274,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             overlap = overlap or self.overlap
             
             # Process in chunks if input is large
-            if chunk_size is not None and W > chunk_size:
-                # Calculate effective chunk size with overlap
+            if W > self.max_resolution:
                 effective_chunk = chunk_size - 2 * overlap
                 num_chunks = math.ceil(W / effective_chunk)
                 chunks = []
