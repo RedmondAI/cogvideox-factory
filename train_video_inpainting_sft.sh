@@ -9,8 +9,8 @@ OUTPUT_DIR="./cogvideox-inpainting"
 DATA_ROOT="/var/lib/docker/dataset"  # Updated to correct dataset path
 
 # Training hyperparameters
-TRAIN_BATCH_SIZE=4  # Increased to match deepspeed config
-GRADIENT_ACCUMULATION_STEPS=8  # Adjusted for total batch size of 32
+TRAIN_BATCH_SIZE=2  # Reduced batch size for memory efficiency
+GRADIENT_ACCUMULATION_STEPS=16  # Increased to maintain effective batch size of 32
 MAX_NUM_FRAMES=49  # Set to match model's native frame count
 NUM_TRAIN_EPOCHS=100
 LEARNING_RATE=1e-5
@@ -19,10 +19,10 @@ CHECKPOINTING_STEPS=2000
 VALIDATION_STEPS=500
 
 # Dataset settings
-VIDEO_DIR="RGB_720"
-MASK_DIR="MASK_720"
-GT_DIR="GT_720"
-IMAGE_SIZE=720
+VIDEO_DIR="RGB_480"
+MASK_DIR="MASK_480"
+GT_DIR="GT_480"
+IMAGE_SIZE=480
 
 # Model settings
 MIXED_PRECISION="bf16"  # Using bfloat16 for better numerical stability
@@ -30,9 +30,9 @@ RANDOM_FLIP_H=0.5
 RANDOM_FLIP_V=0.5
 WINDOW_SIZE=32
 OVERLAP=8
-CHUNK_SIZE=64  # Increased for more efficient processing
+CHUNK_SIZE=32  # Reduced for better memory efficiency
 VAE_PRECISION="bf16"  # Changed to match mixed precision setting
-NUM_WORKERS=8
+NUM_WORKERS=4  # Reduced for better memory management
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
