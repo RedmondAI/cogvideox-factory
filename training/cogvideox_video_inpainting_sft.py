@@ -547,17 +547,26 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             total_frames = batch["rgb"].shape[2]  # [B, C, T, H, W]
             chunk_losses = []
             
+            # Get temporal compression ratio from transformer config
+            temporal_ratio = self.transformer_config.temporal_compression_ratio
+            
+            # Adjust chunk size and overlap for temporal compression
+            compressed_chunk_size = self.chunk_size // temporal_ratio
+            compressed_overlap = self.overlap // temporal_ratio if self.overlap > 0 else 0
+            compressed_total_frames = total_frames // temporal_ratio
+            
             # Ensure valid chunk size
-            if self.chunk_size >= total_frames:
-                logger.warning(f"Chunk size {self.chunk_size} >= total frames {total_frames}, processing as single chunk")
+            if compressed_chunk_size >= compressed_total_frames:
+                logger.warning(f"Compressed chunk size {compressed_chunk_size} >= compressed total frames {compressed_total_frames}, processing as single chunk")
                 effective_chunk_size = total_frames
                 self.overlap = 0  # No overlap needed for single chunk
                 num_chunks = 1
             else:
                 effective_chunk_size = self.chunk_size
-                num_chunks = max(1, (total_frames - self.overlap) // (effective_chunk_size - self.overlap))
+                stride = effective_chunk_size - self.overlap
+                num_chunks = max(1, (total_frames - self.overlap + stride - 1) // stride)
             
-            logger.info(f"Processing {total_frames} frames in {num_chunks} chunks of size {effective_chunk_size}")
+            logger.info(f"Processing {total_frames} frames (compressed to {compressed_total_frames}) in {num_chunks} chunks of size {effective_chunk_size}")
             
             for chunk_idx in range(num_chunks):
                 try:
@@ -565,9 +574,9 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     start_idx = chunk_idx * (effective_chunk_size - self.overlap)
                     end_idx = min(start_idx + effective_chunk_size, total_frames)
                     
-                    # Ensure we have enough frames
-                    if end_idx - start_idx < 1:
-                        logger.warning(f"Skipping chunk {chunk_idx} due to insufficient frames")
+                    # Ensure we have enough frames for temporal compression
+                    if (end_idx - start_idx) < temporal_ratio:
+                        logger.warning(f"Skipping chunk {chunk_idx} due to insufficient frames for temporal compression")
                         continue
                         
                     logger.debug(f"Processing chunk {chunk_idx+1}/{num_chunks}: frames {start_idx}-{end_idx}")
