@@ -1009,114 +1009,106 @@ def train_loop(
         save_path = os.path.join(config.output_dir, "final_model")
         accelerator.save_state(save_path)
 
-def get_default_config():
-    """Get default training configuration."""
-    return {
-        # Model configuration
-        "model_height": 60,     # Native model height
-        "model_width": 90,      # Native model width
-        "model_frames": 49,     # Native model frame count
-        "in_channels": 16,
-        "out_channels": 16,
-        "attention_heads": 48,
-        "attention_head_dim": 64,
-        "num_layers": 42,
-        "patch_size": 2,
-        "text_embed_dim": 4096,
-        "time_embed_dim": 512,
-        "temporal_compression": 4,
-        
-        # Input configuration
-        "input_height": 720,    # Input video height
-        "input_width": 1280,    # Input video width
-        "input_frames": 100,    # Input frame count
-        
-        # Training configuration
-        "learning_rate": 1e-4,
-        "adam_beta1": 0.9,
-        "adam_beta2": 0.999,
-        "adam_weight_decay": 1e-2,
-        "adam_epsilon": 1e-8,
-        "max_grad_norm": 1.0,
-        
-        # Scheduler configuration
-        "num_train_timesteps": 1000,
-        "beta_start": 0.00085,
-        "beta_end": 0.012,
-        "beta_schedule": "scaled_linear",
-        "prediction_type": "v_prediction",
-        "set_alpha_to_one": True,
-        "steps_offset": 0,
-        "rescale_betas_zero_snr": True,
-        "snr_shift_scale": 1.0,
-        "timestep_spacing": "trailing",
-        
-        # Memory optimization
-        "gradient_checkpointing": True,
-        "use_8bit_adam": True,
-        "enable_xformers_memory_efficient_attention": True,
-        
-        # Mixed precision
-        "mixed_precision": "fp16",
-        "dtype": torch.float16,
-        
-        # Dataset configuration
-        "train_batch_size": 1,  # Due to high memory usage (10.8GB per sample)
-        "eval_batch_size": 1,
-        "dataloader_num_workers": 4,
-        "num_inference_steps": 50,
-    }
-
-def create_pipeline(args):
-    """Create and configure the inpainting pipeline."""
-    config = get_default_config()
-    config.update(vars(args))
+def train_one_epoch(
+    args,
+    accelerator,
+    vae,
+    transformer,
+    optimizer,
+    scheduler,
+    train_dataloader,
+    weight_dtype,
+    epoch,
+):
+    transformer.train()
     
-    # Load models
-    vae = AutoencoderKLCogVideoX.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="vae",
-        torch_dtype=torch.bfloat16 if "5b" in args.pretrained_model_name_or_path.lower() else torch.float16
-    )
-    
-    transformer = CogVideoXTransformer3DModel.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="transformer",
-        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32)
-    )
-    
-    scheduler = CogVideoXDPMScheduler.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="scheduler",
-    )
-    
-    # Update scheduler config
-    scheduler.config.prediction_type = "v_prediction"
-    scheduler.config.rescale_betas_zero_snr = True
-    scheduler.config.snr_shift_scale = 1.0
-    scheduler.config.timestep_spacing = "trailing"
-    
-    # Enable memory optimizations
-    if args.gradient_checkpointing:
+    # Enable gradient checkpointing for memory efficiency
+    if hasattr(transformer, "enable_gradient_checkpointing"):
+        transformer.enable_gradient_checkpointing()
+    elif hasattr(transformer, "gradient_checkpointing"):
         transformer.gradient_checkpointing = True
     
-    if args.enable_xformers_memory_efficient_attention:
-        transformer.enable_xformers_memory_efficient_attention()
+    # Enable memory efficient attention if available
+    if hasattr(transformer, "set_use_memory_efficient_attention_xformers"):
+        transformer.set_use_memory_efficient_attention_xformers(True)
     
-    # Create pipeline
-    pipeline = CogVideoXInpaintingPipeline(
-        vae=vae,
-        transformer=transformer,
-        scheduler=scheduler,
-        args=args,
-    )
+    progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
+    progress_bar.set_description(f"Epoch {epoch}")
     
-    # Prepare models for distributed training
-    if args.distributed_type != DistributedType.NO:
-        pipeline.vae = accelerator.prepare(pipeline.vae)
-        pipeline.transformer = accelerator.prepare(pipeline.transformer)
+    for step, batch in enumerate(train_dataloader):
+        # Reset memory before processing each batch
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        with accelerator.accumulate(transformer):
+            with torch.cuda.amp.autocast(device_type='cuda', enabled=True, dtype=weight_dtype):
+                # Process in chunks if needed
+                frames = batch["frames"].to(weight_dtype)
+                if frames.shape[0] > 2:  # Only chunk if batch size > 2
+                    chunk_size = 2
+                    latents_list = []
+                    for i in range(0, frames.shape[0], chunk_size):
+                        chunk = frames[i:i+chunk_size]
+                        with torch.no_grad():
+                            latents_chunk = vae.encode(chunk).latent_dist.sample()
+                            latents_chunk = latents_chunk * vae.config.scaling_factor
+                            latents_list.append(latents_chunk)
+                        del chunk
+                        torch.cuda.empty_cache()
+                    latents = torch.cat(latents_list, dim=0)
+                    del latents_list
+                else:
+                    latents = vae.encode(frames).latent_dist.sample()
+                    latents = latents * vae.config.scaling_factor
+                
+                # Get noise
+                noise = torch.randn_like(latents)
+                timesteps = torch.randint(0, args.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)
+                noisy_latents = args.noise_scheduler.add_noise(latents, noise, timesteps)
+                
+                # Free up memory
+                del frames
+                torch.cuda.empty_cache()
+                
+                # Predict noise
+                noise_pred = transformer(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=batch["prompt_embeds"],
+                    return_dict=False,
+                )[0]
+                
+                # Compute loss
+                loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
+            
+            # Backprop and optimize
+            accelerator.backward(loss)
+            if accelerator.sync_gradients:
+                accelerator.clip_grad_norm_(transformer.parameters(), args.max_grad_norm)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+            
+            # Free up more memory
+            del noise_pred, noisy_latents, latents, noise
+            torch.cuda.empty_cache()
+        
+        progress_bar.update(1)
+        logs = {"loss": loss.detach().item(), "lr": optimizer.param_groups[0]["lr"]}
+        progress_bar.set_postfix(**logs)
+        accelerator.log(logs, step=epoch * len(train_dataloader) + step)
+        
+        # Monitor memory usage
+        if accelerator.is_local_main_process and step % 100 == 0:
+            memory_allocated = torch.cuda.memory_allocated() / 1024**3
+            max_memory_allocated = torch.cuda.max_memory_allocated() / 1024**3
+            memory_reserved = torch.cuda.memory_reserved() / 1024**3
+            print(f"\nStep {step} Memory Stats:")
+            print(f"  Current memory allocated: {memory_allocated:.2f}GB")
+            print(f"  Max memory allocated: {max_memory_allocated:.2f}GB")
+            print(f"  Memory reserved: {memory_reserved:.2f}GB")
     
-    return pipeline
+    progress_bar.close()
 
 def main(args):
     logging_dir = os.path.join(args.output_dir, args.logging_dir)
@@ -1140,18 +1132,34 @@ def main(args):
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
     
-    # Load models
+    # Load models with memory optimizations
     vae = AutoencoderKLCogVideoX.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="vae",
         torch_dtype=torch.bfloat16 if "5b" in args.pretrained_model_name_or_path.lower() else torch.float16
     )
+    vae.requires_grad_(False)  # Freeze VAE
+    vae.eval()  # Ensure VAE is in eval mode
+    
+    # Set CUDA memory allocation config
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
     
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="transformer",
-        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32)
+        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32),
+        use_memory_efficient_attention=True,  # Enable memory efficient attention
+        use_gradient_checkpointing=True  # Enable gradient checkpointing
     )
+    
+    # Additional memory optimizations
+    if hasattr(transformer, "enable_gradient_checkpointing"):
+        transformer.enable_gradient_checkpointing()
+    elif hasattr(transformer, "gradient_checkpointing"):
+        transformer.gradient_checkpointing = True
+        
+    if hasattr(transformer, "set_use_memory_efficient_attention_xformers"):
+        transformer.set_use_memory_efficient_attention_xformers(True)
     
     scheduler = CogVideoXDPMScheduler.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -1162,13 +1170,6 @@ def main(args):
     scheduler.config.prediction_type = "v_prediction"
     scheduler.config.rescale_betas_zero_snr = True
     scheduler.config.snr_shift_scale = 1.0
-    
-    # Enable memory optimizations
-    if args.gradient_checkpointing:
-        transformer.gradient_checkpointing = True
-    
-    if args.enable_xformers_memory_efficient_attention:
-        transformer.enable_xformers_memory_efficient_attention()
     
     # Create pipeline
     pipeline = CogVideoXInpaintingPipeline(
