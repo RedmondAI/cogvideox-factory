@@ -101,6 +101,9 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         self.overlap = getattr(args, 'overlap', 8) if args else 8
         self.max_resolution = getattr(args, 'max_resolution', 2048) if args else 2048
         
+        # Set memory optimization
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        
         # Store model references
         self.transformer = transformer
         self.vae = vae
@@ -273,102 +276,71 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             chunk_size = chunk_size or self.chunk_size
             overlap = overlap or self.overlap
             
-            # Process in chunks if input is large
-            if W > self.max_resolution:
-                effective_chunk = chunk_size - 2 * overlap
-                num_chunks = math.ceil(W / effective_chunk)
-                chunks = []
-                
-                # Initialize final latents tensor with correct temporal dimension
-                final_latents = torch.zeros(
-                    B, self.transformer.config.in_channels, 
-                    expected_temporal_frames, H//8, W//8,
-                    device=x.device, dtype=torch.float16
-                )
-                weight_sum = torch.zeros_like(final_latents)
-                
-                for i in range(num_chunks):
-                    # Clear cache before processing chunk
-                    torch.cuda.empty_cache()
-                    
-                    # Calculate chunk boundaries with overlap
-                    start_w = max(0, i * effective_chunk - overlap)
-                    end_w = min((i + 1) * effective_chunk + overlap, W)
-                    
-                    # Process chunk
-                    chunk = x[..., start_w:end_w]
-                    chunk_latents = self.vae.encode(chunk).latent_dist.sample()
-                    
-                    # Verify temporal dimension
-                    if chunk_latents.shape[2] != expected_temporal_frames:
-                        logger.warning(f"Chunk temporal dim {chunk_latents.shape[2]} != expected {expected_temporal_frames}")
-                        # Take center frames if needed
-                        if chunk_latents.shape[2] > expected_temporal_frames:
-                            start_idx = (chunk_latents.shape[2] - expected_temporal_frames) // 2
-                            chunk_latents = chunk_latents[:, :, start_idx:start_idx + expected_temporal_frames]
-                        else:
-                            # Pad if chunk has fewer frames
-                            pad_size = expected_temporal_frames - chunk_latents.shape[2]
-                            chunk_latents = F.pad(chunk_latents, (0, 0, 0, 0, 0, pad_size))
-                    
-                    # Create blending weights
-                    _, _, _, _, chunk_w = chunk_latents.shape
-                    weight = torch.ones_like(chunk_latents)
-                    
-                    if i > 0 and overlap > 0:  # Left overlap
-                        left_size = min(overlap // 8, chunk_w)  # Convert to latent space
-                        if left_size > 0:
-                            weight[..., :left_size] *= torch.linspace(0, 1, left_size, device=weight.device).view(1, 1, 1, 1, -1)
-                    
-                    if i < num_chunks - 1 and overlap > 0:  # Right overlap
-                        right_size = min(overlap // 8, chunk_w)  # Convert to latent space
-                        if right_size > 0:
-                            weight[..., -right_size:] *= torch.linspace(1, 0, right_size, device=weight.device).view(1, 1, 1, 1, -1)
-                    
-                    # Add weighted chunk to final latents
-                    start_idx = start_w // 8  # Convert to latent space
-                    chunk_width = chunk_latents.shape[-1]
-                    final_latents[..., start_idx:start_idx + chunk_width] += chunk_latents * weight
-                    weight_sum[..., start_idx:start_idx + chunk_width] += weight
-                    
-                    # Clear chunk from memory
-                    del chunk_latents
-                    del weight
-                    torch.cuda.empty_cache()
-                
-                # Normalize by weight sum
-                final_latents = final_latents / (weight_sum + 1e-8)
-                return final_latents
+            # Process in temporal chunks to save memory
+            temporal_chunk_size = min(16, T)  # Process 16 frames at a time
+            num_temporal_chunks = (T + temporal_chunk_size - 1) // temporal_chunk_size
+            temporal_latents = []
             
-            # Process normally if input is small
-            try:
-                latents = self.vae.encode(x).latent_dist.sample()
-                # Verify temporal dimension
-                if latents.shape[2] != expected_temporal_frames:
-                    logger.warning(f"VAE output temporal dim {latents.shape[2]} != expected {expected_temporal_frames}")
-                    # Take center frames if needed
-                    if latents.shape[2] > expected_temporal_frames:
-                        start_idx = (latents.shape[2] - expected_temporal_frames) // 2
-                        latents = latents[:, :, start_idx:start_idx + expected_temporal_frames]
-                    else:
-                        # Pad if we have fewer frames
-                        pad_size = expected_temporal_frames - latents.shape[2]
-                        latents = F.pad(latents, (0, 0, 0, 0, 0, pad_size))
-                return latents
-            
-            except Exception as e:
-                logger.error(f"Error in VAE encoding: {str(e)}")
-                logger.error(f"VAE input shapes - RGB: {x.shape}")
-                raise
+            for t_idx in range(num_temporal_chunks):
+                t_start = t_idx * temporal_chunk_size
+                t_end = min(t_start + temporal_chunk_size, T)
+                x_chunk = x[:, :, t_start:t_end]
                 
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                logger.warning("Out of memory in encode, trying with smaller chunks")
-                torch.cuda.empty_cache()
-                gc.collect()
-                # Retry with smaller chunks
-                chunk_size = chunk_size // 2 if chunk_size else self.chunk_size // 2
-                return self.encode(x, chunk_size=chunk_size, overlap=overlap)
+                # Process spatial chunks if input is large
+                if W > self.max_resolution:
+                    effective_chunk = chunk_size - 2 * overlap
+                    num_chunks = math.ceil(W / effective_chunk)
+                    spatial_chunks = []
+                    
+                    for chunk_idx in range(num_chunks):
+                        start_idx = chunk_idx * effective_chunk
+                        end_idx = min(start_idx + chunk_size, W)
+                        start_idx = max(0, end_idx - chunk_size)
+                        
+                        # Extract chunk
+                        chunk = x_chunk[..., start_idx:end_idx]
+                        
+                        # Encode chunk
+                        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                            chunk_latents = self.vae.encode(chunk).latent_dist.sample()
+                            chunk_latents = chunk_latents * self.vae.config.scaling_factor
+                        
+                        # Remove overlap if not first or last chunk
+                        if chunk_idx > 0:
+                            chunk_latents = chunk_latents[..., overlap//8:]
+                        if chunk_idx < num_chunks - 1:
+                            chunk_latents = chunk_latents[..., :-(overlap//8)]
+                        
+                        spatial_chunks.append(chunk_latents)
+                    
+                    # Concatenate spatial chunks
+                    chunk_latents = torch.cat(spatial_chunks, dim=-1)
+                else:
+                    # Encode whole temporal chunk
+                    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                        chunk_latents = self.vae.encode(x_chunk).latent_dist.sample()
+                        chunk_latents = chunk_latents * self.vae.config.scaling_factor
+                
+                # Handle temporal compression
+                target_frames = (t_end - t_start) // temporal_ratio
+                if chunk_latents.shape[2] > target_frames:
+                    start_idx = (chunk_latents.shape[2] - target_frames) // 2
+                    chunk_latents = chunk_latents[:, :, start_idx:start_idx + target_frames]
+                
+                temporal_latents.append(chunk_latents)
+            
+            # Concatenate temporal chunks
+            latents = torch.cat(temporal_latents, dim=2)
+            
+            # Verify final temporal dimension
+            if latents.shape[2] != expected_temporal_frames:
+                raise ValueError(f"Expected {expected_temporal_frames} frames after compression, got {latents.shape[2]}")
+            
+            return latents
+            
+        except Exception as e:
+            logger.error(f"Error in encode: {str(e)}")
+            logger.error(f"Stack trace: {traceback.format_exc()}")
             raise
     
     @torch.no_grad()
@@ -470,10 +442,8 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         )
         text_input_ids = text_inputs.input_ids.to(self.device)
         
-        encoder_hidden_states = self.text_encoder(text_input_ids)[0]
-        # Take first token only
-        encoder_hidden_states = encoder_hidden_states[:, :1]
-        return encoder_hidden_states
+        text_embeddings = self.text_encoder(text_input_ids)[0]
+        return text_embeddings
     
     @torch.no_grad()
     def __call__(
