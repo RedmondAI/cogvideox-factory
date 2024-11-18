@@ -264,18 +264,14 @@ class CogVideoXInpaintingPipeline(BasePipeline):
     
     @torch.no_grad()
     def encode(self, x: torch.Tensor, chunk_size: Optional[int] = None, overlap: Optional[int] = None) -> torch.Tensor:
-        """Encode input video to latent space."""
+        """Encode video to latent space with temporal compression."""
         try:
+            # Get dimensions and calculate temporal compression
+            B, C, T, H, W = x.shape
+            temporal_ratio = 4  # VAE's fixed temporal compression ratio
+            expected_temporal_frames = T // temporal_ratio
             chunk_size = chunk_size or self.chunk_size
             overlap = overlap or self.overlap
-            
-            # Clear memory before encoding
-            torch.cuda.empty_cache()
-            gc.collect()
-            
-            B, C, T, H, W = x.shape
-            temporal_ratio = self.transformer_config.temporal_compression_ratio
-            vae_spatial_ratio = 8
             
             # Process in chunks if input is large
             if chunk_size is not None and W > chunk_size:
@@ -283,8 +279,16 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 effective_chunk = chunk_size - 2 * overlap
                 num_chunks = math.ceil(W / effective_chunk)
                 chunks = []
-                weights = []  # For overlap blending
-                chunk_starts = []  # Track start positions
+                weights = []
+                chunk_starts = []
+                
+                # Initialize final latents tensor with correct temporal dimension
+                final_latents = torch.zeros(
+                    B, self.transformer_config.in_channels, 
+                    expected_temporal_frames, H//8, W//8,
+                    device=x.device, dtype=torch.float16
+                )
+                weight_sum = torch.zeros_like(final_latents)
                 
                 for i in range(num_chunks):
                     # Clear cache before processing chunk
@@ -295,95 +299,67 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     end_w = min((i + 1) * effective_chunk + overlap, W)
                     chunk_starts.append(start_w)
                     
-                    # Process chunk with proper temporal handling
-                    chunk_x = x[..., start_w:end_w]
-                    logging.info(f"Processing chunk {i+1}/{num_chunks} - Input shape: {chunk_x.shape}")
+                    # Process chunk
+                    chunk = x[..., start_w:end_w]
+                    chunk_latents = self.vae.encode(chunk).latent_dist.sample()
                     
-                    # VAE encoding (T → T//2 compression)
-                    chunk_latents = self.vae.encode(chunk_x).latent_dist.sample()
-                    logging.info(f"VAE encoding successful - Latent shape: {chunk_latents.shape}")
+                    # Verify temporal dimension
+                    if chunk_latents.shape[2] != expected_temporal_frames:
+                        logger.warning(f"Chunk temporal dim {chunk_latents.shape[2]} != expected {expected_temporal_frames}")
+                        # Take center frames if needed
+                        if chunk_latents.shape[2] > expected_temporal_frames:
+                            start_idx = (chunk_latents.shape[2] - expected_temporal_frames) // 2
+                            chunk_latents = chunk_latents[:, :, start_idx:start_idx + expected_temporal_frames]
+                        else:
+                            # Pad if chunk has fewer frames
+                            pad_size = expected_temporal_frames - chunk_latents.shape[2]
+                            chunk_latents = F.pad(chunk_latents, (0, 0, 0, 0, 0, pad_size))
                     
-                    chunk_latents = chunk_latents * self.vae.config.scaling_factor
-                    
-                    # Get chunk dimensions
-                    _, C, t, h, w = chunk_latents.shape
-                    logging.info(f"Chunk dimensions: channels={C}, time={t}, height={h}, width={w}")
-                    
-                    if w == 0:
-                        raise ValueError(f"Invalid chunk width of 0 detected. Original chunk shape: {chunk_x.shape}")
-                    
-                    # Create blending weights with proper initialization
+                    # Create blending weights
                     weight = torch.ones_like(chunk_latents)
+                    if i > 0:  # Left overlap
+                        left_size = overlap // 8  # Convert to latent space
+                        weight[..., :left_size] = torch.linspace(0, 1, left_size, device=weight.device).view(1, 1, 1, 1, -1)
+                    if i < num_chunks - 1:  # Right overlap
+                        right_size = overlap // 8  # Convert to latent space
+                        weight[..., -right_size:] = torch.linspace(1, 0, right_size, device=weight.device).view(1, 1, 1, 1, -1)
                     
-                    # Only apply blending if we have valid overlap sizes
-                    if i > 0 and overlap > 0:  # Left overlap
-                        left_size = min(overlap // vae_spatial_ratio, w)  # Ensure size is valid
-                        if left_size > 0:
-                            weight[..., :left_size] = torch.linspace(0, 1, left_size, device=weight.device).view(1, 1, 1, 1, -1)
+                    # Add weighted chunk to final latents
+                    start_idx = start_w // 8  # Convert to latent space
+                    chunk_width = chunk_latents.shape[-1]
+                    final_latents[..., start_idx:start_idx + chunk_width] += chunk_latents * weight
+                    weight_sum[..., start_idx:start_idx + chunk_width] += weight
                     
-                    if i < num_chunks - 1 and overlap > 0:  # Right overlap
-                        right_size = min(overlap // vae_spatial_ratio, w)  # Ensure size is valid
-                        if right_size > 0:
-                            weight[..., -right_size:] = torch.linspace(1, 0, right_size, device=weight.device).view(1, 1, 1, 1, -1)
-                    
-                    # Store chunk and weight
-                    chunks.append(chunk_latents)
-                    weights.append(weight)
-                    
-                # Blend chunks with weights
-                final_latents = torch.zeros(
-                    B, self.transformer_config.in_channels, 
-                    T//temporal_ratio, H//vae_spatial_ratio, W//vae_spatial_ratio,
-                    device=x.device, dtype=torch.float16
-                )
-                weight_sum = torch.zeros_like(final_latents)
+                    # Clear chunk from memory
+                    del chunk_latents
+                    del weight
+                    torch.cuda.empty_cache()
                 
-                try:
-                    for chunk, weight, start_w in zip(chunks, weights, chunk_starts):
-                        # Ensure temporal dimensions match
-                        if chunk.shape[2] != T//temporal_ratio:
-                            logger.warning(f"Chunk temporal dim {chunk.shape[2]} != expected {T//temporal_ratio}")
-                            # Take center frames if needed
-                            if chunk.shape[2] > T//temporal_ratio:
-                                start_idx = (chunk.shape[2] - T//temporal_ratio) // 2
-                                chunk = chunk[:, :, start_idx:start_idx + T//temporal_ratio]
-                            else:
-                                # Pad if chunk has fewer frames
-                                pad_size = T//temporal_ratio - chunk.shape[2]
-                                chunk = F.pad(chunk, (0, 0, 0, 0, 0, pad_size))
-                        
-                        # Add weighted chunk to final output
-                        start_idx = start_w // vae_spatial_ratio
-                        chunk_width = chunk.shape[-1]
-                        final_latents[..., start_idx:start_idx + chunk_width] += chunk * weight
-                        weight_sum[..., start_idx:start_idx + chunk_width] += weight
-                        
-                        # Clear chunk from memory
-                        del chunk
-                        del weight
-                        torch.cuda.empty_cache()
-                    
-                    # Normalize by weight sum
-                    final_latents = final_latents / (weight_sum + 1e-8)
-                    return final_latents
-                
-                except Exception as e:
-                    logger.error(f"Error in chunk blending: {str(e)}")
-                    logger.error(f"Chunks shapes: {[c.shape for c in chunks]}")
-                    logger.error(f"Expected shape: {final_latents.shape}")
-                    raise
-        
+                # Normalize by weight sum
+                final_latents = final_latents / (weight_sum + 1e-8)
+                return final_latents
+            
             # Process normally if input is small
             try:
                 latents = self.vae.encode(x).latent_dist.sample()
+                # Verify temporal dimension
+                if latents.shape[2] != expected_temporal_frames:
+                    logger.warning(f"VAE output temporal dim {latents.shape[2]} != expected {expected_temporal_frames}")
+                    # Take center frames if needed
+                    if latents.shape[2] > expected_temporal_frames:
+                        start_idx = (latents.shape[2] - expected_temporal_frames) // 2
+                        latents = latents[:, :, start_idx:start_idx + expected_temporal_frames]
+                    else:
+                        # Pad if we have fewer frames
+                        pad_size = expected_temporal_frames - latents.shape[2]
+                        latents = F.pad(latents, (0, 0, 0, 0, 0, pad_size))
+                return latents
+            
             except Exception as e:
                 logger.error(f"Error in VAE encoding: {str(e)}")
-                logger.error(f"VAE input shape: {x.shape}")
+                logger.error(f"VAE input shapes - RGB: {x.shape}")
                 raise
-            
-            latents = latents * self.vae.config.scaling_factor
-            return latents
-        
+                
         except RuntimeError as e:
             if "out of memory" in str(e):
                 logger.warning("Out of memory in encode, trying with smaller chunks")
@@ -402,7 +378,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             decoded = self.vae.decode(latents).sample
             
             # Get input temporal dimension
-            input_frames = latents.shape[2] * 2  # T//2 → T
+            input_frames = latents.shape[2] * 4  # T//4 → T
             
             # Handle fixed 8-frame output from VAE
             if decoded.shape[2] != input_frames:
