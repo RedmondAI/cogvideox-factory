@@ -645,7 +645,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         )
         
         # Convert video to latent space with memory-efficient encoding
-        with torch.cuda.amp.autocast(device_type='cuda', dtype=dtype):
+        with torch.amp.autocast(enabled=True, dtype=dtype):
             # Encode input video
             video_latents = self.vae.encode(video).latent_dist.sample()
             video_latents = video_latents * self.vae.config.scaling_factor
