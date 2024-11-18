@@ -473,7 +473,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         
         return mask
     
-    def prepare_encoder_hidden_states(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    def prepare_encoder_hidden_states(self, batch_size: int, device: torch.device, dtype: torch.dtype):
         """
         Prepare zero tensors for conditioning the transformer.
         
@@ -483,10 +483,18 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             dtype: Data type of the tensors
         
         Returns:
-            Zero tensor of shape (batch_size, 1, hidden_size)
+            Zero tensor of shape (batch_size, 1, 4096) - matches CogVideoX-5b hidden size
         """
-        hidden_size = self.transformer.config.hidden_size
-        return torch.zeros((batch_size, 1, hidden_size), device=device, dtype=dtype)
+        hidden_size = 4096  # Fixed size for CogVideoX-5b
+        encoder_hidden_states = torch.zeros(batch_size, 1, hidden_size, device=device, dtype=dtype)
+        
+        # Validate shape and type
+        assert encoder_hidden_states.shape == (batch_size, 1, hidden_size), \
+            f"Incorrect hidden states shape: {encoder_hidden_states.shape}"
+        assert encoder_hidden_states.dtype == dtype, \
+            f"Incorrect hidden states dtype: {encoder_hidden_states.dtype}"
+        
+        return encoder_hidden_states
     
     @torch.no_grad()
     def __call__(
@@ -861,61 +869,42 @@ def train_loop(
                     align_corners=False
                 )
                 
-                # Test VAE encoding/decoding and handle temporal expansion
-                latent = vae.encode(clean_frames).latent_dist.sample()
-                decoded = vae.decode(latent).sample
-                
-                # Handle fixed 8-frame VAE output
-                decoded = handle_vae_temporal_output(decoded, T)
-                
-                # Verify no NaN values from VAE
-                assert not torch.isnan(latent).any(), "VAE latent contains NaN values"
-                assert not torch.isnan(decoded).any(), "VAE output contains NaN values"
-                
                 # Convert to [B, T, C, H, W] format for transformer
                 clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
                 
-                # Create encoder hidden states
-                encoder_hidden_states = torch.zeros(
-                    clean_frames.shape[0], 1, model.config.text_embed_dim,
+                # Create encoder hidden states with validation
+                encoder_hidden_states = model.prepare_encoder_hidden_states(
+                    batch_size=B,
                     device=clean_frames.device,
                     dtype=model_dtype
                 )
                 
+                # Sample timesteps
+                timesteps = torch.randint(
+                    0, noise_scheduler.config.num_train_timesteps, (B,),
+                    device=clean_frames.device
+                )
+                
+                # Add noise
+                noise = torch.randn_like(clean_frames)
+                noisy_frames = noise_scheduler.add_noise(clean_frames, noise, timesteps)
+                
                 # Get model prediction
                 noise_pred = model(
-                    hidden_states=clean_frames,
-                    timestep=torch.randint(
-                        0, noise_scheduler.config.num_train_timesteps, (clean_frames.shape[0],), 
-                        device=clean_frames.device
-                    ),
+                    hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
+                    timestep=timesteps,
                     encoder_hidden_states=encoder_hidden_states,
                 ).sample
                 
-                # Verify no NaN values from activations or normalization
-                if torch.isnan(noise_pred).any():
-                    raise ValueError("Model output contains NaN values - possible activation or normalization issue")
-                
                 # Verify shape consistency
-                if noise_pred.shape[:3] != clean_frames.shape[:3]:
-                    raise ValueError(f"Model output shape {noise_pred.shape} doesn't match input shape {clean_frames.shape} in batch, temporal, or channel dimensions")
-                
-                # Verify spatial dimensions after patch embedding
-                H_in, W_in = clean_frames.shape[3:]
-                H_out = H_in - (H_in % model.config.patch_size)  # Round down to nearest multiple of patch_size
-                W_out = W_in - (W_in % model.config.patch_size)  # Round down to nearest multiple of patch_size
-                
-                if noise_pred.shape[3:] != (H_out, W_out):
-                    raise ValueError(f"Expected spatial dimensions ({H_out}, {W_out}), got {noise_pred.shape[3:]}")
+                assert noise_pred.shape == noisy_frames.shape, \
+                    f"Model output shape {noise_pred.shape} doesn't match input shape {noisy_frames.shape}"
                 
                 # Compute loss with SNR rescaling
                 loss = compute_loss_v_pred_with_snr(
-                    noise_pred, torch.randn_like(clean_frames), 
-                    torch.randint(
-                        0, noise_scheduler.config.num_train_timesteps, (clean_frames.shape[0],), 
-                        device=clean_frames.device
-                    ), noise_scheduler,
-                    mask=mask, noisy_frames=clean_frames
+                    noise_pred, noise, timesteps, noise_scheduler,
+                    mask=mask.permute(0, 2, 1, 3, 4),  # Match permuted frames
+                    noisy_frames=noisy_frames
                 )
                 
                 # Verify loss is valid
