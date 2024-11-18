@@ -551,10 +551,11 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             if self.chunk_size >= total_frames:
                 logger.warning(f"Chunk size {self.chunk_size} >= total frames {total_frames}, processing as single chunk")
                 effective_chunk_size = total_frames
+                self.overlap = 0  # No overlap needed for single chunk
                 num_chunks = 1
             else:
                 effective_chunk_size = self.chunk_size
-                num_chunks = (total_frames - effective_chunk_size) // (effective_chunk_size - self.overlap) + 1
+                num_chunks = max(1, (total_frames - self.overlap) // (effective_chunk_size - self.overlap))
             
             logger.info(f"Processing {total_frames} frames in {num_chunks} chunks of size {effective_chunk_size}")
             
@@ -563,7 +564,10 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     # Calculate chunk boundaries
                     start_idx = chunk_idx * (effective_chunk_size - self.overlap)
                     end_idx = min(start_idx + effective_chunk_size, total_frames)
-                    if end_idx - start_idx < 2:  # Skip chunks that are too small
+                    
+                    # Ensure we have enough frames
+                    if end_idx - start_idx < 1:
+                        logger.warning(f"Skipping chunk {chunk_idx} due to insufficient frames")
                         continue
                         
                     logger.debug(f"Processing chunk {chunk_idx+1}/{num_chunks}: frames {start_idx}-{end_idx}")
