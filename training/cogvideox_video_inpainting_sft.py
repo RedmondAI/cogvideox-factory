@@ -79,7 +79,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def unwrap_model(model):
-    """Unwrap a model from its distributed wrapper."""
+    """
+    Unwrap a model from its distributed wrapper.
+    
+    Args:
+        model: The model to unwrap
+        
+    Returns:
+        The unwrapped model
+    """
     if hasattr(model, "module"):
         return model.module
     return model
