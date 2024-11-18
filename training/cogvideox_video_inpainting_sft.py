@@ -625,13 +625,17 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         Returns:
             loss: Training loss for this batch
         """
+        # Clear cache before processing
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         # Move models to correct device and dtype if needed
         device = batch["rgb"].device
         dtype = batch["rgb"].dtype
         
-        # Get input tensors
-        video = batch["rgb"]  # [B, C, T, H, W]
-        mask = batch["mask"]  # [B, 1, T, H, W]
+        # Get input tensors with memory-efficient casting
+        video = batch["rgb"].to(device=device, dtype=dtype)  # [B, C, T, H, W]
+        mask = batch["mask"].to(device=device, dtype=dtype)  # [B, 1, T, H, W]
         
         # Create encoder hidden states (zero conditioning for inpainting)
         encoder_hidden_states = torch.zeros(
@@ -640,49 +644,56 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             dtype=dtype
         )
         
-        # Convert video to latent space
-        video_latents = self.vae.encode(video).latent_dist.sample()
-        video_latents = video_latents * self.vae.config.scaling_factor
+        # Convert video to latent space with memory-efficient encoding
+        with torch.cuda.amp.autocast(device_type='cuda', dtype=dtype):
+            # Encode input video
+            video_latents = self.vae.encode(video).latent_dist.sample()
+            video_latents = video_latents * self.vae.config.scaling_factor
+            
+            # Convert mask to latent space
+            mask_latents = F.interpolate(
+                mask,
+                size=(
+                    mask.shape[2],  # Keep temporal dimension
+                    video_latents.shape[3],  # Downscale spatial dims
+                    video_latents.shape[4]
+                ),
+                mode="nearest"
+            )
+            
+            # Sample timesteps
+            timesteps = torch.randint(
+                0, self.scheduler.config.num_train_timesteps,
+                (video_latents.shape[0],), device=device
+            )
+            
+            # Add noise
+            noise = torch.randn_like(video_latents)
+            noisy_latents = self.scheduler.add_noise(video_latents, noise, timesteps)
+            
+            # Convert to [B, T, C, H, W] format for transformer
+            noisy_latents = noisy_latents.permute(0, 2, 1, 3, 4)
+            mask_latents = mask_latents.permute(0, 2, 1, 3, 4)
+            noise = noise.permute(0, 2, 1, 3, 4)
+            
+            # Get model prediction
+            noise_pred = self.transformer(
+                hidden_states=noisy_latents,
+                timestep=timesteps,
+                encoder_hidden_states=encoder_hidden_states,
+            ).sample
+            
+            # Compute loss with SNR rescaling
+            loss = compute_loss_v_pred_with_snr(
+                noise_pred, noise, timesteps, self.scheduler,
+                mask=mask_latents,
+                noisy_frames=noisy_latents
+            )
         
-        # Convert mask to latent space
-        mask_latents = F.interpolate(
-            mask,
-            size=(
-                mask.shape[2],  # Keep temporal dimension
-                video_latents.shape[3],  # Downscale spatial dims
-                video_latents.shape[4]
-            ),
-            mode="nearest"
-        )
-        
-        # Sample timesteps
-        timesteps = torch.randint(
-            0, self.scheduler.config.num_train_timesteps,
-            (video_latents.shape[0],), device=device
-        )
-        
-        # Add noise
-        noise = torch.randn_like(video_latents)
-        noisy_latents = self.scheduler.add_noise(video_latents, noise, timesteps)
-        
-        # Convert to [B, T, C, H, W] format for transformer
-        noisy_latents = noisy_latents.permute(0, 2, 1, 3, 4)
-        mask_latents = mask_latents.permute(0, 2, 1, 3, 4)
-        noise = noise.permute(0, 2, 1, 3, 4)
-        
-        # Get model prediction
-        noise_pred = self.transformer(
-            hidden_states=noisy_latents,
-            timestep=timesteps,
-            encoder_hidden_states=encoder_hidden_states,
-        ).sample
-        
-        # Compute loss with SNR rescaling
-        loss = compute_loss_v_pred_with_snr(
-            noise_pred, noise, timesteps, self.scheduler,
-            mask=mask_latents,
-            noisy_frames=noisy_latents
-        )
+        # Clear intermediate tensors
+        del noise, noisy_latents, video_latents, mask_latents
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         return loss
     
