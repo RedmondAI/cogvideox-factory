@@ -106,7 +106,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         # Set processing parameters
         self.chunk_size = getattr(args, 'chunk_size', 64) if args else 64
         self.overlap = getattr(args, 'overlap', 8) if args else 8
-        self.max_resolution = getattr(args, 'max_resolution', 2048) if args else 2048
+        self.max_resolution = getattr(args, 'max_resolution', 640) if args else 640
         
         # Set memory optimization
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -123,7 +123,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         self.vae_device = self.vae.device
         self.chunk_size = 64  # Default spatial chunk size
         self.overlap = 8  # Default overlap size
-        self.max_resolution = 512  # Maximum resolution before chunking
+        self.max_resolution = 640  # Maximum resolution before chunking
         
         # Configure memory efficient attention
         if hasattr(self.transformer, 'set_use_memory_efficient_attention_xformers'):
@@ -1021,6 +1021,7 @@ def train_one_epoch(
     epoch,
 ):
     transformer.train()
+    vae.eval()  # Ensure VAE is in eval mode
     
     # Enable gradient checkpointing for memory efficiency
     if hasattr(transformer, "enable_gradient_checkpointing"):
@@ -1042,24 +1043,31 @@ def train_one_epoch(
         
         with accelerator.accumulate(transformer):
             with torch.cuda.amp.autocast(device_type='cuda', enabled=True, dtype=weight_dtype):
-                # Process in chunks if needed
+                # Process in smaller chunks with gradient disabled for VAE
                 frames = batch["frames"].to(weight_dtype)
-                if frames.shape[0] > 2:  # Only chunk if batch size > 2
-                    chunk_size = 2
-                    latents_list = []
-                    for i in range(0, frames.shape[0], chunk_size):
-                        chunk = frames[i:i+chunk_size]
-                        with torch.no_grad():
-                            latents_chunk = vae.encode(chunk).latent_dist.sample()
-                            latents_chunk = latents_chunk * vae.config.scaling_factor
-                            latents_list.append(latents_chunk)
-                        del chunk
-                        torch.cuda.empty_cache()
-                    latents = torch.cat(latents_list, dim=0)
-                    del latents_list
+                chunk_size = 1  # Process one frame at a time
+                latents_list = []
+                
+                # Split frames into chunks
+                for i in range(0, frames.shape[0], chunk_size):
+                    chunk = frames[i:i+chunk_size]
+                    torch.cuda.empty_cache()
+                    
+                    # Move chunk to CPU after processing if needed
+                    with torch.no_grad():
+                        latents_chunk = vae.encode(chunk).latent_dist.sample()
+                        latents_chunk = latents_chunk * vae.config.scaling_factor
+                        latents_list.append(latents_chunk.cpu() if i + chunk_size < frames.shape[0] else latents_chunk)
+                    del chunk
+                    torch.cuda.empty_cache()
+                
+                # Concatenate all chunks
+                if len(latents_list) > 1:
+                    latents = torch.cat([chunk.cuda() if chunk.device.type == 'cpu' else chunk for chunk in latents_list], dim=0)
                 else:
-                    latents = vae.encode(frames).latent_dist.sample()
-                    latents = latents * vae.config.scaling_factor
+                    latents = latents_list[0]
+                del latents_list
+                torch.cuda.empty_cache()
                 
                 # Get noise
                 noise = torch.randn_like(latents)
@@ -1067,7 +1075,7 @@ def train_one_epoch(
                 noisy_latents = args.noise_scheduler.add_noise(latents, noise, timesteps)
                 
                 # Free up memory
-                del frames
+                del frames, latents
                 torch.cuda.empty_cache()
                 
                 # Predict noise
@@ -1090,7 +1098,7 @@ def train_one_epoch(
             optimizer.zero_grad()
             
             # Free up more memory
-            del noise_pred, noisy_latents, latents, noise
+            del noise_pred, noisy_latents, noise
             torch.cuda.empty_cache()
         
         progress_bar.update(1)
@@ -1107,6 +1115,9 @@ def train_one_epoch(
             print(f"  Current memory allocated: {memory_allocated:.2f}GB")
             print(f"  Max memory allocated: {max_memory_allocated:.2f}GB")
             print(f"  Memory reserved: {memory_reserved:.2f}GB")
+            
+            # Reset peak memory stats periodically
+            torch.cuda.reset_peak_memory_stats()
     
     progress_bar.close()
 
@@ -1136,20 +1147,22 @@ def main(args):
     vae = AutoencoderKLCogVideoX.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="vae",
-        torch_dtype=torch.bfloat16 if "5b" in args.pretrained_model_name_or_path.lower() else torch.float16
+        torch_dtype=torch.bfloat16 if "5b" in args.pretrained_model_name_or_path.lower() else torch.float16,
+        low_cpu_mem_usage=True
     )
     vae.requires_grad_(False)  # Freeze VAE
     vae.eval()  # Ensure VAE is in eval mode
     
     # Set CUDA memory allocation config
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,garbage_collection_threshold:0.8,expandable_segments:True"
     
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="transformer",
         torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32),
         use_memory_efficient_attention=True,  # Enable memory efficient attention
-        use_gradient_checkpointing=True  # Enable gradient checkpointing
+        use_gradient_checkpointing=True,  # Enable gradient checkpointing
+        low_cpu_mem_usage=True
     )
     
     # Additional memory optimizations
@@ -1355,5 +1368,5 @@ if __name__ == "__main__":
     args.use_8bit_adam = getattr(args, 'use_8bit_adam', False)
     args.use_flash_attention = getattr(args, 'use_flash_attention', False)
     args.vae_precision = getattr(args, 'vae_precision', "fp16")
-    args.max_resolution = getattr(args, 'max_resolution', 2048)
+    args.max_resolution = getattr(args, 'max_resolution', 640)  # Maximum resolution before chunking
     main(args)

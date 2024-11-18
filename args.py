@@ -14,12 +14,16 @@ def get_args():
     
     # Data configuration
     parser.add_argument("--data_root", type=str, required=True)
-    parser.add_argument("--video_dir", type=str, default="RGB_720")
-    parser.add_argument("--mask_dir", type=str, default="MASK_720")
-    parser.add_argument("--gt_dir", type=str, default="GT_720")
-    parser.add_argument("--image_size", type=int, default=720)
-    parser.add_argument("--height", type=int, default=None)
-    parser.add_argument("--width", type=int, default=None)
+    parser.add_argument("--video_dir", type=str, default="RGB_480")
+    parser.add_argument("--mask_dir", type=str, default="MASK_480")
+    parser.add_argument("--gt_dir", type=str, default="GT_480")
+    parser.add_argument("--image_size", type=int, default=480)
+    parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--width", type=int, default=640)
+    parser.add_argument("--max_resolution", type=int, default=2048)
+    parser.add_argument("--min_sequence_length", type=int, default=100)
+    parser.add_argument("--random_flip_h", type=float, default=0.0)
+    parser.add_argument("--random_flip_v", type=float, default=0.0)
     
     # Training configuration
     parser.add_argument("--output_dir", type=str, required=True)
@@ -61,10 +65,6 @@ def get_args():
     parser.add_argument("--window_size", type=int, default=32)
     parser.add_argument("--overlap", type=int, default=8)
     parser.add_argument("--chunk_size", type=int, default=64)
-    parser.add_argument("--max_resolution", type=int, default=2048)
-    parser.add_argument("--min_sequence_length", type=int, default=100)
-    parser.add_argument("--random_flip_h", type=float, default=0.0)
-    parser.add_argument("--random_flip_v", type=float, default=0.0)
     
     # Memory settings
     parser.add_argument("--enable_memory_logging", action="store_true")
@@ -90,8 +90,8 @@ def get_args():
     
     # Set defaults for optional parameters
     if args.height is None:
-        args.height = args.image_size
+        args.height = 480
     if args.width is None:
-        args.width = args.image_size
+        args.width = 640
         
     return args

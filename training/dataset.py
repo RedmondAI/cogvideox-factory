@@ -369,12 +369,12 @@ class VideoInpaintingDataset(Dataset):
     def __init__(
         self,
         data_root: str,
-        video_dir: str = "RGB_720",
-        mask_dir: str = "MASK_720",
-        gt_dir: str = "GT_720",
+        video_dir: str = "RGB_480",
+        mask_dir: str = "MASK_480",
+        gt_dir: str = "GT_480",
         num_frames: int = 100,  # Original sequence length
         frame_stride: int = 2,
-        image_size: int = 720,
+        image_size: int = 480,
         center_crop: bool = True,
         normalize: bool = True,
     ):
