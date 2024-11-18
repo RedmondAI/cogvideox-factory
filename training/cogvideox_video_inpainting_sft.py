@@ -21,6 +21,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Tuple, Optional, Union, List
 from collections import defaultdict
+import traceback
 
 import diffusers
 import torch
@@ -62,7 +63,20 @@ from utils import (
 
 from training.dataset import VideoInpaintingDataset
 
-logger = get_logger(__name__)
+import logging
+import sys
+import traceback
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('training.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def unwrap_model(model):
     """Unwrap a model from its distributed wrapper."""
@@ -167,6 +181,86 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         logger.info(f"  Total: {total_memory:.2f}GB")
         
         return spatial_scale, temporal_scale
+    
+    def validate_inputs(self, batch):
+        """Validate input tensors."""
+        try:
+            # Check for required keys
+            required_keys = ["rgb", "mask", "gt"]
+            for key in required_keys:
+                if key not in batch:
+                    raise ValueError(f"Missing required key '{key}' in batch")
+            
+            # Get shapes
+            rgb_shape = batch["rgb"].shape
+            mask_shape = batch["mask"].shape
+            gt_shape = batch["gt"].shape
+            
+            logger.info(f"=== Input Validation ===")
+            logger.info(f"RGB shape: {rgb_shape}")
+            logger.info(f"Mask shape: {mask_shape}")
+            logger.info(f"GT shape: {gt_shape}")
+            
+            # Check dimensions
+            if len(rgb_shape) != 5:
+                raise ValueError(f"RGB tensor should have 5 dimensions [B,C,T,H,W], got {len(rgb_shape)}")
+            if len(mask_shape) != 5:
+                raise ValueError(f"Mask tensor should have 5 dimensions [B,C,T,H,W], got {len(mask_shape)}")
+            if len(gt_shape) != 5:
+                raise ValueError(f"GT tensor should have 5 dimensions [B,C,T,H,W], got {len(gt_shape)}")
+            
+            # Check batch size consistency
+            if not (rgb_shape[0] == mask_shape[0] == gt_shape[0]):
+                raise ValueError(f"Inconsistent batch sizes: RGB={rgb_shape[0]}, Mask={mask_shape[0]}, GT={gt_shape[0]}")
+            
+            # Check temporal dimension consistency
+            if not (rgb_shape[2] == mask_shape[2] == gt_shape[2]):
+                raise ValueError(f"Inconsistent temporal dimensions: RGB={rgb_shape[2]}, Mask={mask_shape[2]}, GT={gt_shape[2]}")
+            
+            # Check spatial dimensions
+            if not (rgb_shape[3:] == mask_shape[3:] == gt_shape[3:]):
+                raise ValueError(f"Inconsistent spatial dimensions: RGB={rgb_shape[3:]}, Mask={mask_shape[3:]}, GT={gt_shape[3:]}")
+            
+            # Check value ranges
+            rgb_min, rgb_max = batch["rgb"].min(), batch["rgb"].max()
+            mask_min, mask_max = batch["mask"].min(), batch["mask"].max()
+            gt_min, gt_max = batch["gt"].min(), batch["gt"].max()
+            
+            logger.info(f"=== Value Ranges ===")
+            logger.info(f"RGB range: [{rgb_min}, {rgb_max}]")
+            logger.info(f"Mask range: [{mask_min}, {mask_max}]")
+            logger.info(f"GT range: [{gt_min}, {gt_max}]")
+            
+            # Check for NaN/Inf values
+            if torch.isnan(batch["rgb"]).any():
+                raise ValueError("NaN values detected in RGB tensor")
+            if torch.isnan(batch["mask"]).any():
+                raise ValueError("NaN values detected in Mask tensor")
+            if torch.isnan(batch["gt"]).any():
+                raise ValueError("NaN values detected in GT tensor")
+            
+            if torch.isinf(batch["rgb"]).any():
+                raise ValueError("Inf values detected in RGB tensor")
+            if torch.isinf(batch["mask"]).any():
+                raise ValueError("Inf values detected in Mask tensor")
+            if torch.isinf(batch["gt"]).any():
+                raise ValueError("Inf values detected in GT tensor")
+            
+            # Check device consistency
+            if not (batch["rgb"].device == batch["mask"].device == batch["gt"].device):
+                raise ValueError("Tensors must be on the same device")
+            
+            # Check dtype consistency
+            if not (batch["rgb"].dtype == batch["mask"].dtype == batch["gt"].dtype):
+                raise ValueError("Tensors must have the same dtype")
+            
+            logger.info("Input validation successful")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Input validation failed: {str(e)}")
+            logger.error(f"Stack trace: {traceback.format_exc()}")
+            raise
     
     @torch.no_grad()
     def encode(self, x: torch.Tensor, chunk_size: Optional[int] = None, overlap: int = 32) -> torch.Tensor:
@@ -544,12 +638,23 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             torch.cuda.empty_cache()
             gc.collect()
             
+            # Validate input tensors
+            self.validate_inputs(batch)
+            
             total_frames = batch["rgb"].shape[2]  # [B, C, T, H, W]
             chunk_losses = []
             
             # Get compression ratios from model configs
             temporal_ratio = self.transformer_config.temporal_compression_ratio  # Usually 4
             spatial_ratio = 8  # VAE's fixed spatial compression ratio
+            
+            logger.info(f"=== Training Step Configuration ===")
+            logger.info(f"Total frames: {total_frames}")
+            logger.info(f"Temporal compression ratio: {temporal_ratio}")
+            logger.info(f"Spatial compression ratio: {spatial_ratio}")
+            logger.info(f"Initial chunk size: {self.chunk_size}")
+            logger.info(f"Initial overlap: {self.overlap}")
+            logger.info(f"Batch shape: {batch['rgb'].shape}")
             
             # Calculate minimum chunk size based on model requirements
             min_chunk_size = temporal_ratio * 2  # Need at least 2 frames after compression
@@ -561,8 +666,9 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             
             # Ensure chunk size is divisible by temporal ratio
             if self.chunk_size % temporal_ratio != 0:
+                old_size = self.chunk_size
                 self.chunk_size = ((self.chunk_size + temporal_ratio - 1) // temporal_ratio) * temporal_ratio
-                logger.info(f"Adjusted chunk size to {self.chunk_size} to be divisible by temporal ratio {temporal_ratio}")
+                logger.info(f"Adjusted chunk size from {old_size} to {self.chunk_size} to be divisible by temporal ratio {temporal_ratio}")
             
             # Calculate number of chunks with overlap
             if total_frames <= self.chunk_size:
@@ -573,7 +679,9 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             else:
                 # Ensure overlap is divisible by temporal ratio
                 if self.overlap % temporal_ratio != 0:
+                    old_overlap = self.overlap
                     self.overlap = (self.overlap // temporal_ratio) * temporal_ratio
+                    logger.info(f"Adjusted overlap from {old_overlap} to {self.overlap} to be divisible by temporal ratio {temporal_ratio}")
                 
                 # Calculate stride between chunks
                 stride = self.chunk_size - self.overlap
@@ -583,13 +691,22 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 # Calculate number of chunks needed
                 num_chunks = max(1, (total_frames - self.overlap + stride - 1) // stride)
             
-            logger.info(f"Processing {total_frames} frames in {num_chunks} chunks of size {self.chunk_size} with overlap {self.overlap}")
+            logger.info(f"=== Chunk Configuration ===")
+            logger.info(f"Final chunk size: {self.chunk_size}")
+            logger.info(f"Final overlap: {self.overlap}")
+            logger.info(f"Stride between chunks: {self.chunk_size - self.overlap}")
+            logger.info(f"Number of chunks: {num_chunks}")
             
             for chunk_idx in range(num_chunks):
                 try:
                     # Calculate chunk boundaries
                     start_idx = chunk_idx * (self.chunk_size - self.overlap)
                     end_idx = min(start_idx + self.chunk_size, total_frames)
+                    
+                    logger.info(f"\n=== Processing Chunk {chunk_idx+1}/{num_chunks} ===")
+                    logger.info(f"Start index: {start_idx}")
+                    logger.info(f"End index: {end_idx}")
+                    logger.info(f"Chunk frames: {end_idx - start_idx}")
                     
                     # Ensure chunk has enough frames for temporal compression
                     if (end_idx - start_idx) < min_chunk_size:
@@ -600,28 +717,45 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     chunk_frames = end_idx - start_idx
                     if chunk_frames % temporal_ratio != 0:
                         pad_frames = ((chunk_frames + temporal_ratio - 1) // temporal_ratio) * temporal_ratio - chunk_frames
-                        logger.info(f"Padding chunk {chunk_idx} with {pad_frames} frames for temporal compression")
+                        logger.info(f"Padding chunk with {pad_frames} frames for temporal compression")
                         end_idx = min(end_idx + pad_frames, total_frames)
-                    
-                    logger.debug(f"Processing chunk {chunk_idx+1}/{num_chunks}: frames {start_idx}-{end_idx}")
+                        chunk_frames = end_idx - start_idx
+                        logger.info(f"New chunk frames after padding: {chunk_frames}")
                     
                     # Get chunk data
                     chunk_rgb = batch["rgb"][:, :, start_idx:end_idx]
                     chunk_mask = batch["mask"][:, :, start_idx:end_idx]
                     chunk_gt = batch["gt"][:, :, start_idx:end_idx]
                     
+                    logger.info(f"=== Chunk Tensor Shapes ===")
+                    logger.info(f"RGB shape: {chunk_rgb.shape}")
+                    logger.info(f"Mask shape: {chunk_mask.shape}")
+                    logger.info(f"GT shape: {chunk_gt.shape}")
+                    
                     # Pad spatial dimensions for VAE
                     chunk_rgb, rgb_pad = pad_to_multiple(chunk_rgb, multiple=spatial_ratio * 8, max_dim=self.max_resolution)
                     chunk_mask, _ = pad_to_multiple(chunk_mask, multiple=spatial_ratio * 8, max_dim=self.max_resolution)
                     chunk_gt, _ = pad_to_multiple(chunk_gt, multiple=spatial_ratio * 8, max_dim=self.max_resolution)
                     
-                    # Process with VAE
-                    rgb_latents = self.encode(chunk_rgb)
-                    gt_latents = self.encode(chunk_gt)
+                    logger.info(f"=== After Spatial Padding ===")
+                    logger.info(f"RGB shape: {chunk_rgb.shape}")
+                    logger.info(f"Mask shape: {chunk_mask.shape}")
+                    logger.info(f"GT shape: {chunk_gt.shape}")
+                    logger.info(f"Padding amounts: {rgb_pad}")
                     
-                    # Prepare mask and noise
-                    mask = F.interpolate(chunk_mask, size=rgb_latents.shape[-2:])
-                    noise = torch.randn_like(gt_latents)
+                    # Process with VAE
+                    try:
+                        rgb_latents = self.encode(chunk_rgb)
+                        gt_latents = self.encode(chunk_gt)
+                        logger.info(f"=== VAE Encoding ===")
+                        logger.info(f"RGB latents shape: {rgb_latents.shape}")
+                        logger.info(f"GT latents shape: {gt_latents.shape}")
+                    except Exception as e:
+                        logger.error(f"Error in VAE encoding: {str(e)}")
+                        logger.error(f"VAE input shapes - RGB: {chunk_rgb.shape}, GT: {chunk_gt.shape}")
+                        raise
+                    
+                    # Sample timesteps
                     timesteps = torch.randint(
                         0, self.scheduler.config.num_train_timesteps,
                         (chunk_rgb.shape[0],), device=chunk_rgb.device
@@ -630,48 +764,70 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     # Get encoder hidden states
                     encoder_hidden_states = torch.zeros(
                         chunk_rgb.shape[0], 
-                        chunk_rgb.shape[2],  # Use actual temporal dimension
-                        self.transformer_config.hidden_size,  # Use property accessor
+                        chunk_rgb.shape[2] // temporal_ratio,  # Compress temporal dimension
+                        self.transformer_config.hidden_size,
                         device=chunk_rgb.device,
+                        dtype=chunk_rgb.dtype
                     )
                     
-                    # Forward through transformer
-                    model_pred = self.transformer(
-                        hidden_states=torch.cat([gt_latents, mask], dim=2),
-                        encoder_hidden_states=encoder_hidden_states,
-                        timestep=timesteps,
-                    ).sample
+                    logger.info(f"=== Model Inputs ===")
+                    logger.info(f"Timesteps: {timesteps}")
+                    logger.info(f"Hidden states shape: {encoder_hidden_states.shape}")
                     
-                    # Remove padding
-                    model_pred = unpad(model_pred, (rgb_pad[0]//8, rgb_pad[1]//8))
-                    noise = unpad(noise, (rgb_pad[0]//8, rgb_pad[1]//8))
+                    # Add noise and get prediction
+                    try:
+                        noise = torch.randn_like(rgb_latents)
+                        noisy_latents = self.scheduler.add_noise(rgb_latents, noise, timesteps)
+                        model_pred = self.transformer(
+                            noisy_latents,
+                            timesteps,
+                            encoder_hidden_states=encoder_hidden_states,
+                        ).sample
+                        
+                        logger.info(f"=== Model Prediction ===")
+                        logger.info(f"Noise shape: {noise.shape}")
+                        logger.info(f"Noisy latents shape: {noisy_latents.shape}")
+                        logger.info(f"Model prediction shape: {model_pred.shape}")
+                    except Exception as e:
+                        logger.error(f"Error in transformer forward pass: {str(e)}")
+                        logger.error(f"Input shapes - Noisy latents: {noisy_latents.shape}, Hidden states: {encoder_hidden_states.shape}")
+                        raise
                     
-                    # Calculate loss
-                    loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
-                    chunk_losses.append(loss)
+                    # Compute loss
+                    try:
+                        chunk_loss = compute_loss_v_pred_with_snr(
+                            model_pred, noise, timesteps, self.scheduler,
+                            mask=chunk_mask, noisy_frames=noisy_latents
+                        )
+                        chunk_losses.append(chunk_loss)
+                        logger.info(f"Chunk {chunk_idx+1} loss: {chunk_loss.item()}")
+                    except Exception as e:
+                        logger.error(f"Error computing loss: {str(e)}")
+                        logger.error(f"Loss inputs - Pred: {model_pred.shape}, Noise: {noise.shape}, Mask: {chunk_mask.shape}")
+                        raise
                     
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        logger.warning(f"OOM processing chunk {chunk_idx}, skipping")
-                        torch.cuda.empty_cache()
-                        gc.collect()
-                        continue
-                    raise
                 except Exception as e:
                     logger.error(f"Error processing chunk {chunk_idx}: {str(e)}")
+                    logger.error(f"Stack trace: {traceback.format_exc()}")
                     continue
-                
-                torch.cuda.empty_cache()
             
             if not chunk_losses:
+                logger.error("No chunks were successfully processed")
                 raise RuntimeError("No chunks were successfully processed")
             
-            return torch.stack(chunk_losses).mean()
+            # Average losses across chunks
+            loss = torch.stack(chunk_losses).mean()
+            logger.info(f"=== Final Loss ===")
+            logger.info(f"Number of successful chunks: {len(chunk_losses)}")
+            logger.info(f"Average loss: {loss.item()}")
+            
+            return loss
             
         except Exception as e:
             logger.error(f"Error in training step: {str(e)}")
+            logger.error(f"Stack trace: {traceback.format_exc()}")
             raise
-
+    
 def collate_fn(examples):
     rgb = torch.stack([example["rgb"] for example in examples])
     mask = torch.stack([example["mask"] for example in examples])
