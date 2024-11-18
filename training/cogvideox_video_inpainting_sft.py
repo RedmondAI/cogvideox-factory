@@ -614,72 +614,77 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         return mean_diff, max_diff
 
     def training_step(self, batch):
-        """Training step for video inpainting."""
-        try:
-            # Validate inputs and get dimensions
-            self.validate_inputs(batch)
-            video, mask = batch["rgb"], batch["mask"]
-            B, C, T, H, W = video.shape
-            
-            # Move models to correct device and dtype
-            device = video.device
-            dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-            
-            # Clear cache before processing
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            
-            # Prepare latents with memory-efficient encoding
-            with torch.amp.autocast(device_type='cuda', dtype=dtype):
-                # Encode input video
-                latents = self.encode(video)
-                
-                # Prepare mask in latent space (but don't pass to transformer)
-                mask_latents = self.prepare_mask(mask)
-                
-                # Sample noise with correct dimensions
-                noise = torch.randn_like(latents, dtype=dtype)
-                timesteps = torch.randint(0, self.scheduler.config.num_train_timesteps, (B,), device=device)
-                
-                # Add noise to latents
-                noisy_latents = self.scheduler.add_noise(latents, noise, timesteps)
-                
-                # Create zero tensor for conditioning
-                encoder_hidden_states = torch.zeros(
-                    (video.shape[0], 1, self.transformer.config.hidden_size),
-                    device=device,
-                    dtype=dtype,
-                )
-                
-                # Get model prediction
-                model_pred = self.transformer(
-                    hidden_states=noisy_latents,
-                    encoder_hidden_states=encoder_hidden_states,
-                    timestep=timesteps,
-                    return_dict=False,
-                )[0]
-                
-                # Compute loss with SNR scaling and proper masking
-                loss = compute_loss_v_pred_with_snr(
-                    model_pred,
-                    noise,
-                    timesteps,
-                    self.scheduler,
-                    mask=mask_latents,
-                    noisy_frames=noisy_latents
-                )
-                
-                # Clear intermediate tensors
-                del noise, noisy_latents
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+        """
+        Perform a single training step.
         
-            return {"loss": loss}
-            
-        except Exception as e:
-            logger.error(f"Error in training step: {str(e)}")
-            logger.error(f"Stack trace: {traceback.format_exc()}")
-            raise
+        Args:
+            batch: Dictionary containing:
+                - rgb: Input video frames [B, C, T, H, W]
+                - mask: Binary mask [B, 1, T, H, W]
+                
+        Returns:
+            loss: Training loss for this batch
+        """
+        # Move models to correct device and dtype if needed
+        device = batch["rgb"].device
+        dtype = batch["rgb"].dtype
+        
+        # Get input tensors
+        video = batch["rgb"]  # [B, C, T, H, W]
+        mask = batch["mask"]  # [B, 1, T, H, W]
+        
+        # Create encoder hidden states (zero conditioning for inpainting)
+        encoder_hidden_states = torch.zeros(
+            (video.shape[0], 1, 4096),  # Fixed size for CogVideoX-5b
+            device=device,
+            dtype=dtype
+        )
+        
+        # Convert video to latent space
+        video_latents = self.vae.encode(video).latent_dist.sample()
+        video_latents = video_latents * self.vae.config.scaling_factor
+        
+        # Convert mask to latent space
+        mask_latents = F.interpolate(
+            mask,
+            size=(
+                mask.shape[2],  # Keep temporal dimension
+                video_latents.shape[3],  # Downscale spatial dims
+                video_latents.shape[4]
+            ),
+            mode="nearest"
+        )
+        
+        # Sample timesteps
+        timesteps = torch.randint(
+            0, self.scheduler.config.num_train_timesteps,
+            (video_latents.shape[0],), device=device
+        )
+        
+        # Add noise
+        noise = torch.randn_like(video_latents)
+        noisy_latents = self.scheduler.add_noise(video_latents, noise, timesteps)
+        
+        # Convert to [B, T, C, H, W] format for transformer
+        noisy_latents = noisy_latents.permute(0, 2, 1, 3, 4)
+        mask_latents = mask_latents.permute(0, 2, 1, 3, 4)
+        noise = noise.permute(0, 2, 1, 3, 4)
+        
+        # Get model prediction
+        noise_pred = self.transformer(
+            hidden_states=noisy_latents,
+            timestep=timesteps,
+            encoder_hidden_states=encoder_hidden_states,
+        ).sample
+        
+        # Compute loss with SNR rescaling
+        loss = compute_loss_v_pred_with_snr(
+            noise_pred, noise, timesteps, self.scheduler,
+            mask=mask_latents,
+            noisy_frames=noisy_latents
+        )
+        
+        return loss
     
 def collate_fn(examples):
     rgb = torch.stack([example["rgb"] for example in examples])
