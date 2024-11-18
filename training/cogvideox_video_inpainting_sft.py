@@ -334,7 +334,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                             torch.cuda.empty_cache()
                         
                         # Encode chunk with gradient checkpointing
-                        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        with torch.amp.autocast(device_type='cuda', enabled=True, dtype=torch.bfloat16):
                             with torch.no_grad():
                                 chunk_latents = self.vae.encode(chunk).latent_dist.sample()
                                 chunk_latents = chunk_latents * self.vae.config.scaling_factor
@@ -364,7 +364,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     if self.vae.device == torch.device('cpu'):
                         x_chunk = x_chunk.cpu()
                     
-                    with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    with torch.amp.autocast(device_type='cuda', enabled=True, dtype=torch.bfloat16):
                         with torch.no_grad():
                             chunk_latents = self.vae.encode(x_chunk).latent_dist.sample()
                             chunk_latents = chunk_latents * self.vae.config.scaling_factor
@@ -645,7 +645,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         )
         
         # Convert video to latent space with memory-efficient encoding
-        with torch.amp.autocast(enabled=True, dtype=dtype):
+        with torch.amp.autocast(device_type='cuda', enabled=True, dtype=dtype):
             # Encode input video
             video_latents = self.vae.encode(video).latent_dist.sample()
             video_latents = video_latents * self.vae.config.scaling_factor
