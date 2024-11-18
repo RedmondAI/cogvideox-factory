@@ -8,19 +8,12 @@ if [ $# -eq 0 ]; then
 fi
 
 git add . && git commit -m "$1" && git push origin main
-
 # SSH into remote server and execute commands
 sshpass -p 'ML4lyfe' ssh redmond@204.15.42.29 << 'EOF'
     cd cogvideox-factory/
-    # Kill existing training session if it exists
-    tmux kill-session -t training 2>/dev/null || true
-    # Create new detached session
-    tmux new-session -d -s training
-    # Send commands to the session
-    tmux send-keys -t training "source myenv/bin/activate" C-m
-    tmux send-keys -t training "git stash" C-m
-    tmux send-keys -t training "git pull" C-m
-    tmux send-keys -t training "chmod +x train_video_inpainting_sft.sh" C-m
-    tmux send-keys -t training "./train_video_inpainting_sft.sh" C-m
-    echo "Training started in tmux session 'training'. Attach with: tmux attach -t training"
+    source myenv/bin/activate
+    git stash
+    git pull
+    chmod +x train_video_inpainting_sft.sh
+    ./train_video_inpainting_sft.sh
 EOF
