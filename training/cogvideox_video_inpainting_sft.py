@@ -547,53 +547,73 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             total_frames = batch["rgb"].shape[2]  # [B, C, T, H, W]
             chunk_losses = []
             
-            # Get temporal compression ratio from transformer config
-            temporal_ratio = self.transformer_config.temporal_compression_ratio
+            # Get compression ratios from model configs
+            temporal_ratio = self.transformer_config.temporal_compression_ratio  # Usually 4
+            spatial_ratio = 8  # VAE's fixed spatial compression ratio
             
-            # Adjust chunk size and overlap for temporal compression
-            compressed_chunk_size = self.chunk_size // temporal_ratio
-            compressed_overlap = self.overlap // temporal_ratio if self.overlap > 0 else 0
-            compressed_total_frames = total_frames // temporal_ratio
+            # Calculate minimum chunk size based on model requirements
+            min_chunk_size = temporal_ratio * 2  # Need at least 2 frames after compression
             
-            # Ensure valid chunk size
-            if compressed_chunk_size >= compressed_total_frames:
-                logger.warning(f"Compressed chunk size {compressed_chunk_size} >= compressed total frames {compressed_total_frames}, processing as single chunk")
+            # Ensure chunk size is valid for temporal compression
+            if self.chunk_size < min_chunk_size:
+                logger.warning(f"Chunk size {self.chunk_size} is too small for temporal ratio {temporal_ratio}, increasing to {min_chunk_size}")
+                self.chunk_size = min_chunk_size
+            
+            # Ensure chunk size is divisible by temporal ratio
+            if self.chunk_size % temporal_ratio != 0:
+                self.chunk_size = ((self.chunk_size + temporal_ratio - 1) // temporal_ratio) * temporal_ratio
+                logger.info(f"Adjusted chunk size to {self.chunk_size} to be divisible by temporal ratio {temporal_ratio}")
+            
+            # Calculate number of chunks with overlap
+            if total_frames <= self.chunk_size:
+                logger.info(f"Total frames {total_frames} <= chunk size {self.chunk_size}, processing as single chunk")
+                num_chunks = 1
                 effective_chunk_size = total_frames
                 self.overlap = 0  # No overlap needed for single chunk
-                num_chunks = 1
             else:
-                effective_chunk_size = self.chunk_size
-                stride = effective_chunk_size - self.overlap
+                # Ensure overlap is divisible by temporal ratio
+                if self.overlap % temporal_ratio != 0:
+                    self.overlap = (self.overlap // temporal_ratio) * temporal_ratio
+                
+                # Calculate stride between chunks
+                stride = self.chunk_size - self.overlap
+                if stride <= 0:
+                    raise ValueError(f"Invalid stride: chunk_size={self.chunk_size} - overlap={self.overlap} <= 0")
+                
+                # Calculate number of chunks needed
                 num_chunks = max(1, (total_frames - self.overlap + stride - 1) // stride)
             
-            logger.info(f"Processing {total_frames} frames (compressed to {compressed_total_frames}) in {num_chunks} chunks of size {effective_chunk_size}")
+            logger.info(f"Processing {total_frames} frames in {num_chunks} chunks of size {self.chunk_size} with overlap {self.overlap}")
             
             for chunk_idx in range(num_chunks):
                 try:
                     # Calculate chunk boundaries
-                    start_idx = chunk_idx * (effective_chunk_size - self.overlap)
-                    end_idx = min(start_idx + effective_chunk_size, total_frames)
+                    start_idx = chunk_idx * (self.chunk_size - self.overlap)
+                    end_idx = min(start_idx + self.chunk_size, total_frames)
                     
-                    # Ensure we have enough frames for temporal compression
-                    if (end_idx - start_idx) < temporal_ratio:
-                        logger.warning(f"Skipping chunk {chunk_idx} due to insufficient frames for temporal compression")
+                    # Ensure chunk has enough frames for temporal compression
+                    if (end_idx - start_idx) < min_chunk_size:
+                        logger.warning(f"Skipping chunk {chunk_idx} - insufficient frames for temporal compression (got {end_idx - start_idx}, need {min_chunk_size})")
                         continue
-                        
+                    
+                    # Ensure chunk size is divisible by temporal ratio
+                    chunk_frames = end_idx - start_idx
+                    if chunk_frames % temporal_ratio != 0:
+                        pad_frames = ((chunk_frames + temporal_ratio - 1) // temporal_ratio) * temporal_ratio - chunk_frames
+                        logger.info(f"Padding chunk {chunk_idx} with {pad_frames} frames for temporal compression")
+                        end_idx = min(end_idx + pad_frames, total_frames)
+                    
                     logger.debug(f"Processing chunk {chunk_idx+1}/{num_chunks}: frames {start_idx}-{end_idx}")
                     
-                    # Get and pad chunk
+                    # Get chunk data
                     chunk_rgb = batch["rgb"][:, :, start_idx:end_idx]
                     chunk_mask = batch["mask"][:, :, start_idx:end_idx]
                     chunk_gt = batch["gt"][:, :, start_idx:end_idx]
                     
-                    # Validate chunk shapes
-                    if chunk_rgb.shape[2] < 2 or chunk_mask.shape[2] < 2 or chunk_gt.shape[2] < 2:
-                        logger.warning(f"Skipping chunk {chunk_idx} due to insufficient frames")
-                        continue
-                    
-                    chunk_rgb, rgb_pad = pad_to_multiple(chunk_rgb, max_dim=self.max_resolution)
-                    chunk_mask, _ = pad_to_multiple(chunk_mask, max_dim=self.max_resolution)
-                    chunk_gt, _ = pad_to_multiple(chunk_gt, max_dim=self.max_resolution)
+                    # Pad spatial dimensions for VAE
+                    chunk_rgb, rgb_pad = pad_to_multiple(chunk_rgb, multiple=spatial_ratio * 8, max_dim=self.max_resolution)
+                    chunk_mask, _ = pad_to_multiple(chunk_mask, multiple=spatial_ratio * 8, max_dim=self.max_resolution)
+                    chunk_gt, _ = pad_to_multiple(chunk_gt, multiple=spatial_ratio * 8, max_dim=self.max_resolution)
                     
                     # Process with VAE
                     rgb_latents = self.encode(chunk_rgb)
@@ -608,7 +628,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     )
                     
                     # Get encoder hidden states
-                    encoder_hidden_states = torch.randn(
+                    encoder_hidden_states = torch.zeros(
                         chunk_rgb.shape[0], 
                         chunk_rgb.shape[2],  # Use actual temporal dimension
                         self.transformer_config.hidden_size,  # Use property accessor
