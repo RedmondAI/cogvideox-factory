@@ -263,7 +263,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             raise
     
     @torch.no_grad()
-    def encode(self, x: torch.Tensor, chunk_size: Optional[int] = None, overlap: int = 32) -> torch.Tensor:
+    def encode(self, x: torch.Tensor, chunk_size: Optional[int] = None, overlap: Optional[int] = None) -> torch.Tensor:
         """Encode input video to latent space."""
         try:
             chunk_size = chunk_size or self.chunk_size
@@ -349,7 +349,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             raise
     
     @torch.no_grad()
-    def decode(self, latents: torch.Tensor, chunk_size: Optional[int] = None, overlap: int = 32) -> torch.Tensor:
+    def decode(self, latents: torch.Tensor, chunk_size: Optional[int] = None, overlap: Optional[int] = None) -> torch.Tensor:
         """Decode latents to video space with temporal expansion."""
         try:
             chunk_size = chunk_size or self.chunk_size
