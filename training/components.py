@@ -263,7 +263,10 @@ class CogVideoXInpaintingPipeline:
         
         # Set default device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.dtype = torch.float16
+        
+        # Set precision based on model type
+        model_name = getattr(transformer.config, "_name_or_path", "").lower()
+        self.dtype = torch.bfloat16 if "5b" in model_name else torch.float16
         
         # Move models to device
         self.vae = self.vae.to(self.device, dtype=self.dtype)

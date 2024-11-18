@@ -1226,7 +1226,7 @@ def create_pipeline(args):
     vae = AutoencoderKLCogVideoX.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="vae",
-        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32)
+        torch_dtype=torch.bfloat16 if "5b" in args.pretrained_model_name_or_path.lower() else torch.float16
     )
     
     transformer = CogVideoXTransformer3DModel.from_pretrained(
@@ -1295,7 +1295,7 @@ def main(args):
     vae = AutoencoderKLCogVideoX.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="vae",
-        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32)
+        torch_dtype=torch.bfloat16 if "5b" in args.pretrained_model_name_or_path.lower() else torch.float16
     )
     
     transformer = CogVideoXTransformer3DModel.from_pretrained(
