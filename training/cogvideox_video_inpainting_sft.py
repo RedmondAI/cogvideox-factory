@@ -473,28 +473,20 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         
         return mask
     
-    def prepare_encoder_hidden_states(
-        self,
-        prompt: Union[str, List[str]],
-        batch_size: int = 1,
-    ) -> torch.Tensor:
-        """Prepare conditioning for inpainting.
-        
-        For inpainting, we use zero conditioning since we don't need text guidance.
-        The transformer will learn to fill in masked regions based on video context.
+    def prepare_encoder_hidden_states(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        """
+        Prepare zero tensors for conditioning the transformer.
         
         Args:
-            prompt: Unused for inpainting
-            batch_size: Batch size
+            batch_size: Number of samples in the batch
+            device: Device to put the tensors on
+            dtype: Data type of the tensors
         
         Returns:
-            Zero tensor of shape [B, 1, 4096]
+            Zero tensor of shape (batch_size, 1, hidden_size)
         """
-        return torch.zeros(
-            batch_size, 1, self.transformer.config.text_embed_dim,
-            device=self.device,
-            dtype=self.dtype
-        )
+        hidden_size = self.transformer.config.hidden_size
+        return torch.zeros((batch_size, 1, hidden_size), device=device, dtype=dtype)
     
     @torch.no_grad()
     def __call__(
@@ -532,7 +524,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         # Prepare inputs
         latents = self.encode(video)
         mask = self.prepare_mask(mask)
-        encoder_hidden_states = self.prepare_encoder_hidden_states(prompt, batch_size)
+        encoder_hidden_states = self.prepare_encoder_hidden_states(batch_size, video.device, video.dtype)
         
         # Initialize noise
         noise = torch.randn_like(latents)
@@ -644,11 +636,18 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 # Add noise to latents
                 noisy_latents = self.scheduler.add_noise(latents, noise, timesteps)
                 
+                # Create zero tensor for conditioning
+                encoder_hidden_states = torch.zeros(
+                    (video.shape[0], 1, self.transformer.config.hidden_size),
+                    device=device,
+                    dtype=dtype,
+                )
+                
                 # Get model prediction
                 model_pred = self.transformer(
                     hidden_states=noisy_latents,
-                    timestep=timesteps.to(dtype=dtype),
-                    encoder_hidden_states=None,
+                    encoder_hidden_states=encoder_hidden_states,
+                    timestep=timesteps,
                     return_dict=False,
                 )[0]
                 
