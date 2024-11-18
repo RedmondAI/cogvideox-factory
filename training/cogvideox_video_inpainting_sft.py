@@ -327,7 +327,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                             torch.cuda.empty_cache()
                         
                         # Encode chunk with gradient checkpointing
-                        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                        with torch.cuda.amp.autocast('cuda', dtype=torch.bfloat16):
                             with torch.no_grad():
                                 chunk_latents = self.vae.encode(chunk).latent_dist.sample()
                                 chunk_latents = chunk_latents * self.vae.config.scaling_factor
@@ -357,45 +357,45 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     if self.vae.device == torch.device('cpu'):
                         x_chunk = x_chunk.cpu()
                     
-                    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                    with torch.cuda.amp.autocast('cuda', dtype=torch.bfloat16):
                         with torch.no_grad():
                             chunk_latents = self.vae.encode(x_chunk).latent_dist.sample()
                             chunk_latents = chunk_latents * self.vae.config.scaling_factor
                     
                     if self.vae.device == torch.device('cpu'):
                         chunk_latents = chunk_latents.to(vae_device)
-                
-                # Handle temporal compression
-                target_frames = (t_end - t_start) // temporal_ratio
-                if chunk_latents.shape[2] > target_frames:
-                    start_idx = (chunk_latents.shape[2] - target_frames) // 2
-                    chunk_latents = chunk_latents[:, :, start_idx:start_idx + target_frames]
-                
-                temporal_latents.append(chunk_latents)
-                
-                # Clear chunk from memory
-                del chunk_latents
-                torch.cuda.empty_cache()
             
-            # Move VAE back to original device
-            if self.vae.device == torch.device('cpu'):
-                self.vae = self.vae.to(vae_device)
+            # Handle temporal compression
+            target_frames = (t_end - t_start) // temporal_ratio
+            if chunk_latents.shape[2] > target_frames:
+                start_idx = (chunk_latents.shape[2] - target_frames) // 2
+                chunk_latents = chunk_latents[:, :, start_idx:start_idx + target_frames]
             
-            # Concatenate temporal chunks
-            latents = torch.cat(temporal_latents, dim=2)
-            del temporal_latents
+            temporal_latents.append(chunk_latents)
+            
+            # Clear chunk from memory
+            del chunk_latents
             torch.cuda.empty_cache()
-            
-            # Verify final temporal dimension
-            if latents.shape[2] != expected_temporal_frames:
-                raise ValueError(f"Expected {expected_temporal_frames} frames after compression, got {latents.shape[2]}")
-            
-            return latents
-            
-        except Exception as e:
-            logger.error(f"Error in encode: {str(e)}")
-            logger.error(f"Stack trace: {traceback.format_exc()}")
-            raise
+        
+        # Move VAE back to original device
+        if self.vae.device == torch.device('cpu'):
+            self.vae = self.vae.to(vae_device)
+        
+        # Concatenate temporal chunks
+        latents = torch.cat(temporal_latents, dim=2)
+        del temporal_latents
+        torch.cuda.empty_cache()
+        
+        # Verify final temporal dimension
+        if latents.shape[2] != expected_temporal_frames:
+            raise ValueError(f"Expected {expected_temporal_frames} frames after compression, got {latents.shape[2]}")
+        
+        return latents
+        
+    except Exception as e:
+        logger.error(f"Error in encode: {str(e)}")
+        logger.error(f"Stack trace: {traceback.format_exc()}")
+        raise
     
     @torch.no_grad()
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
@@ -633,11 +633,11 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 torch.cuda.empty_cache()
             
             # Prepare latents with memory-efficient encoding
-            with torch.cuda.amp.autocast(dtype=dtype):
+            with torch.amp.autocast('cuda', dtype=dtype):
                 # Encode input video
                 latents = self.encode(video)
                 
-                # Prepare mask in latent space
+                # Prepare mask in latent space (but don't pass to transformer)
                 mask_latents = self.prepare_mask(mask)
                 
                 # Sample noise with correct dimensions
@@ -652,7 +652,6 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     hidden_states=noisy_latents,
                     timestep=timesteps.to(dtype=dtype),
                     encoder_hidden_states=None,
-                    attention_mask=mask_latents,
                     return_dict=False,
                 )[0]
                 
@@ -670,7 +669,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 del noise, noisy_latents
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            
+        
             return {"loss": loss}
             
         except Exception as e:
