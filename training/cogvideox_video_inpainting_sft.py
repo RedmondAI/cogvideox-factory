@@ -98,11 +98,10 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         vae: AutoencoderKLCogVideoX,
         transformer: CogVideoXTransformer3DModel,
         scheduler: CogVideoXDPMScheduler,
-        text_encoder=None,
-        tokenizer=None,
         args=None,
     ):
-        super().__init__(vae, transformer, scheduler, text_encoder, tokenizer)
+        # Initialize without text encoder and tokenizer since they're not needed for inpainting
+        super().__init__(vae, transformer, scheduler)
         
         # Set processing parameters
         self.chunk_size = getattr(args, 'chunk_size', 64) if args else 64
@@ -479,33 +478,23 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         prompt: Union[str, List[str]],
         batch_size: int = 1,
     ) -> torch.Tensor:
-        """Prepare text conditioning.
+        """Prepare conditioning for inpainting.
+        
+        For inpainting, we use zero conditioning since we don't need text guidance.
+        The transformer will learn to fill in masked regions based on video context.
         
         Args:
-            prompt: Text prompt or list of prompts
+            prompt: Unused for inpainting
             batch_size: Batch size
-            
-        Returns:
-            Conditioning tensor of shape [B, 1, 4096]
-        """
-        if self.text_encoder is None:
-            # Return random conditioning if no text encoder
-            return torch.randn(batch_size, 1, self.transformer.config.text_embed_dim, device=self.device, dtype=self.dtype)
-            
-        if isinstance(prompt, str):
-            prompt = [prompt] * batch_size
-            
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=self.tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-        text_input_ids = text_inputs.input_ids.to(self.device)
         
-        text_embeddings = self.text_encoder(text_input_ids)[0]
-        return text_embeddings
+        Returns:
+            Zero tensor of shape [B, 1, 4096]
+        """
+        return torch.zeros(
+            batch_size, 1, self.transformer.config.text_embed_dim,
+            device=self.device,
+            dtype=self.dtype
+        )
     
     @torch.no_grad()
     def __call__(
@@ -521,7 +510,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         """Run inpainting pipeline.
         
         Args:
-            prompt: Conditioning text
+            prompt: Unused for inpainting
             video: Input video [B, C, T, H, W]
             mask: Binary mask [B, 1, T, H, W]
             num_inference_steps: Number of denoising steps
@@ -1101,6 +1090,7 @@ def create_pipeline(args):
     scheduler.config.prediction_type = "v_prediction"
     scheduler.config.rescale_betas_zero_snr = True
     scheduler.config.snr_shift_scale = 1.0
+    scheduler.config.timestep_spacing = "trailing"
     
     # Enable memory optimizations
     if args.gradient_checkpointing:
@@ -1109,7 +1099,7 @@ def create_pipeline(args):
     if args.enable_xformers_memory_efficient_attention:
         transformer.enable_xformers_memory_efficient_attention()
     
-    # Create pipeline with unwrapped models
+    # Create pipeline
     pipeline = CogVideoXInpaintingPipeline(
         vae=vae,
         transformer=transformer,
@@ -1118,13 +1108,11 @@ def create_pipeline(args):
     )
     
     # Prepare models for distributed training
-    vae, transformer = accelerator.prepare(vae, transformer)
+    if args.distributed_type != DistributedType.NO:
+        pipeline.vae = accelerator.prepare(pipeline.vae)
+        pipeline.transformer = accelerator.prepare(pipeline.transformer)
     
-    # Update pipeline with wrapped models
-    pipeline.vae = vae
-    pipeline.transformer = transformer
-    
-    return pipeline, config
+    return pipeline
 
 def main(args):
     logging_dir = os.path.join(args.output_dir, args.logging_dir)
