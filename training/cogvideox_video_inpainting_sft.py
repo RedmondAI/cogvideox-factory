@@ -279,8 +279,6 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 effective_chunk = chunk_size - 2 * overlap
                 num_chunks = math.ceil(W / effective_chunk)
                 chunks = []
-                weights = []
-                chunk_starts = []
                 
                 # Initialize final latents tensor with correct temporal dimension
                 final_latents = torch.zeros(
@@ -297,7 +295,6 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     # Calculate chunk boundaries with overlap
                     start_w = max(0, i * effective_chunk - overlap)
                     end_w = min((i + 1) * effective_chunk + overlap, W)
-                    chunk_starts.append(start_w)
                     
                     # Process chunk
                     chunk = x[..., start_w:end_w]
@@ -316,13 +313,18 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                             chunk_latents = F.pad(chunk_latents, (0, 0, 0, 0, 0, pad_size))
                     
                     # Create blending weights
+                    _, _, _, _, chunk_w = chunk_latents.shape
                     weight = torch.ones_like(chunk_latents)
-                    if i > 0:  # Left overlap
-                        left_size = overlap // 8  # Convert to latent space
-                        weight[..., :left_size] = torch.linspace(0, 1, left_size, device=weight.device).view(1, 1, 1, 1, -1)
-                    if i < num_chunks - 1:  # Right overlap
-                        right_size = overlap // 8  # Convert to latent space
-                        weight[..., -right_size:] = torch.linspace(1, 0, right_size, device=weight.device).view(1, 1, 1, 1, -1)
+                    
+                    if i > 0 and overlap > 0:  # Left overlap
+                        left_size = min(overlap // 8, chunk_w)  # Convert to latent space
+                        if left_size > 0:
+                            weight[..., :left_size] *= torch.linspace(0, 1, left_size, device=weight.device).view(1, 1, 1, 1, -1)
+                    
+                    if i < num_chunks - 1 and overlap > 0:  # Right overlap
+                        right_size = min(overlap // 8, chunk_w)  # Convert to latent space
+                        if right_size > 0:
+                            weight[..., -right_size:] *= torch.linspace(1, 0, right_size, device=weight.device).view(1, 1, 1, 1, -1)
                     
                     # Add weighted chunk to final latents
                     start_idx = start_w // 8  # Convert to latent space
