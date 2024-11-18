@@ -268,7 +268,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         try:
             # Get dimensions and calculate temporal compression
             B, C, T, H, W = x.shape
-            temporal_ratio = 4  # VAE's fixed temporal compression ratio
+            temporal_ratio = self.transformer.config.temporal_compression_ratio
             expected_temporal_frames = T // temporal_ratio
             chunk_size = chunk_size or self.chunk_size
             overlap = overlap or self.overlap
@@ -282,7 +282,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 
                 # Initialize final latents tensor with correct temporal dimension
                 final_latents = torch.zeros(
-                    B, self.transformer_config.in_channels, 
+                    B, self.transformer.config.in_channels, 
                     expected_temporal_frames, H//8, W//8,
                     device=x.device, dtype=torch.float16
                 )
@@ -380,7 +380,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             decoded = self.vae.decode(latents).sample
             
             # Get input temporal dimension
-            input_frames = latents.shape[2] * 4  # T//4 → T
+            input_frames = latents.shape[2] * self.transformer.config.temporal_compression_ratio
             
             # Handle fixed 8-frame output from VAE
             if decoded.shape[2] != input_frames:
@@ -405,12 +405,12 @@ class CogVideoXInpaintingPipeline(BasePipeline):
     ) -> torch.Tensor:
         """Prepare random latents accounting for temporal and spatial compression."""
         # Get compression ratios from model configs
-        temporal_ratio = self.transformer_config.temporal_compression_ratio
+        temporal_ratio = self.transformer.config.temporal_compression_ratio
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
         
         latents_shape = (
             batch_size, 
-            self.transformer_config.in_channels, 
+            self.transformer.config.in_channels, 
             num_frames//temporal_ratio,  # Temporal compression from transformer config
             height//vae_spatial_ratio,   # VAE spatial compression (8x)
             width//vae_spatial_ratio     # VAE spatial compression (8x)
@@ -430,7 +430,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             where temporal_ratio is from transformer config and 8 is VAE's spatial compression
         """
         # Use transformer's temporal compression ratio and VAE's spatial ratio
-        temporal_ratio = self.transformer_config.temporal_compression_ratio
+        temporal_ratio = self.transformer.config.temporal_compression_ratio
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
         
         mask = F.interpolate(mask, size=(
@@ -457,7 +457,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         """
         if self.text_encoder is None:
             # Return random conditioning if no text encoder
-            return torch.randn(batch_size, 1, self.transformer_config.text_embed_dim, device=self.device, dtype=self.dtype)
+            return torch.randn(batch_size, 1, self.transformer.config.text_embed_dim, device=self.device, dtype=self.dtype)
             
         if isinstance(prompt, str):
             prompt = [prompt] * batch_size
@@ -607,7 +607,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             chunk_losses = []
             
             # Get compression ratios from model configs
-            temporal_ratio = self.transformer_config.temporal_compression_ratio  # Usually 4
+            temporal_ratio = self.transformer.config.temporal_compression_ratio  # Usually 4
             spatial_ratio = 8  # VAE's fixed spatial compression ratio
             
             logger.info(f"=== Training Step Configuration ===")
@@ -727,7 +727,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     encoder_hidden_states = torch.zeros(
                         chunk_rgb.shape[0], 
                         chunk_rgb.shape[2] // temporal_ratio,  # Compress temporal dimension
-                        self.transformer_config.hidden_size,
+                        self.transformer.config.hidden_size,
                         device=chunk_rgb.device,
                         dtype=chunk_rgb.dtype
                     )
@@ -741,8 +741,8 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                         noise = torch.randn_like(rgb_latents)
                         noisy_latents = self.scheduler.add_noise(rgb_latents, noise, timesteps)
                         model_pred = self.transformer(
-                            noisy_latents,
-                            timesteps,
+                            hidden_states=noisy_latents.permute(0, 2, 1, 3, 4),
+                            timestep=timesteps,
                             encoder_hidden_states=encoder_hidden_states,
                         ).sample
                         
