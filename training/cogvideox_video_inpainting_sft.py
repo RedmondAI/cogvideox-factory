@@ -501,8 +501,7 @@ class CogVideoXInpaintingPipeline:
                 t,
                 encoder_hidden_states=None,  # No text conditioning for inpainting
                 image_rotary_emb=None,
-                return_dict=True,
-                output_hidden_states=False
+                return_dict=True
             )
             noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
             
@@ -629,8 +628,7 @@ class CogVideoXInpaintingPipeline:
             timestep=timesteps.to(dtype=self.weight_dtype),
             encoder_hidden_states=None,  # Don't use text conditioning
             image_rotary_emb=image_rotary_emb,
-            return_dict=True,
-            output_hidden_states=False
+            return_dict=True
         )
         noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
         
@@ -883,8 +881,7 @@ def train_loop(
                     timestep=timesteps.to(dtype=model_dtype),
                     encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                     image_rotary_emb=image_rotary_emb,
-                    return_dict=True,
-                    output_hidden_states=False
+                    return_dict=True
                 )
                 noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
                 
@@ -973,8 +970,7 @@ def train_loop(
                                 timestep=timesteps,
                                 encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                                 image_rotary_emb=image_rotary_emb,
-                                return_dict=True,
-                                output_hidden_states=False
+                                return_dict=True
                             )
                             noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
                             val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
@@ -1104,8 +1100,7 @@ def train_one_epoch(
                     timesteps,
                     encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                     image_rotary_emb=image_rotary_emb,
-                    return_dict=True,
-                    output_hidden_states=False
+                    return_dict=True
                 )
                 noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
                 
