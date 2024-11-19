@@ -626,7 +626,7 @@ class CogVideoXInpaintingPipeline:
         model_output = self.transformer(
             hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
             timestep=timesteps.to(dtype=self.weight_dtype),
-            encoder_hidden_states=None,  # Use None since we don't need text conditioning
+            encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
             image_rotary_emb=image_rotary_emb,
             return_dict=True
         ).sample  # Access .sample directly instead of unpacking
@@ -838,12 +838,8 @@ def train_loop(
                 # Convert to [B, T, C, H, W] format for transformer
                 clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
                 
-                # Create encoder hidden states with validation
-                encoder_hidden_states = model.prepare_encoder_hidden_states(
-                    batch_size=B,
-                    device=clean_frames.device,
-                    dtype=model_dtype
-                )
+                # Create dummy encoder hidden states (4096 is CogVideoX-5b hidden size)
+                encoder_hidden_states = torch.zeros((B, 1, 4096), device=clean_frames.device, dtype=model_dtype)
                 
                 # Sample timesteps
                 timesteps = torch.randint(
