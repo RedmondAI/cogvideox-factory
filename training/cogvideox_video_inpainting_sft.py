@@ -1372,6 +1372,8 @@ if __name__ == "__main__":
     parser.add_argument("--logging_dir", type=str, default="logs")
     parser.add_argument("--report_to", type=str, default="wandb")
     parser.add_argument("--revision", type=str, default=None)
+    parser.add_argument("--enable_slicing", action="store_true", help="Whether to use VAE slicing for saving memory.")
+    parser.add_argument("--enable_tiling", action="store_true", help="Whether to use VAE tiling for saving memory.")
     args = parser.parse_args()
     args.window_size = getattr(args, 'window_size', 32)
     args.overlap = getattr(args, 'overlap', 8)
