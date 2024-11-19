@@ -1135,7 +1135,7 @@ def main(args):
         mask_dir=args.mask_dir,
         gt_dir=args.gt_dir,
         image_size=args.image_size,
-        max_num_frames=args.max_num_frames,
+        num_frames=args.max_num_frames,
         window_size=args.window_size,
         overlap=args.overlap,
         chunk_size=args.chunk_size,
@@ -1149,7 +1149,7 @@ def main(args):
         mask_dir=args.mask_dir,
         gt_dir=args.gt_dir,
         image_size=args.image_size,
-        max_num_frames=args.max_num_frames,
+        num_frames=args.max_num_frames,
         window_size=args.window_size,
         overlap=args.overlap,
         chunk_size=args.chunk_size,
@@ -1306,7 +1306,7 @@ if __name__ == "__main__":
     parser.add_argument("--train_batch_size", type=int, default=1)
     parser.add_argument("--eval_batch_size", type=int, default=1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=32)
-    parser.add_argument("--max_num_frames", type=int, default=32)
+    parser.add_argument("--num_frames", type=int, default=32)
     parser.add_argument("--num_train_epochs", type=int, default=100)
     parser.add_argument("--learning_rate", type=float, default=1e-5)
     parser.add_argument("--beta1", type=float, default=0.9)
