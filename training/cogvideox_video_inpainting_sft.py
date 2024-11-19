@@ -1116,7 +1116,7 @@ def main(args):
         transformer=transformer,
         scheduler=noise_scheduler,
         device=accelerator.device,
-        dtype=accelerator.dtype
+        dtype=torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16 if args.mixed_precision == "fp16" else torch.float32
     )
 
     # Create optimizer
