@@ -9,17 +9,17 @@ OUTPUT_DIR="./cogvideox-inpainting"
 DATA_ROOT="/var/lib/docker/dataset"
 
 # Training hyperparameters
-TRAIN_BATCH_SIZE=1  # Reduced batch size for memory efficiency
-EVAL_BATCH_SIZE=1   # Same as train batch size for consistency
-GRADIENT_ACCUMULATION_STEPS=32  # Increased to maintain effective batch size
-NUM_FRAMES=32  # Reduced from 49 for memory efficiency
+TRAIN_BATCH_SIZE=1  # Keep batch size at 1 for memory efficiency
+EVAL_BATCH_SIZE=1   # Keep eval batch size at 1
+GRADIENT_ACCUMULATION_STEPS=16  # Reduced from 32 for faster updates
+NUM_FRAMES=16  # Reduced from 32 for better memory efficiency
 NUM_TRAIN_EPOCHS=100
 LEARNING_RATE=1e-5
 BETA1=0.9
 BETA2=0.999
 WEIGHT_DECAY=1e-2
 EPSILON=1e-8
-LR_SCHEDULER="constant"
+LR_SCHEDULER="cosine"  # Changed to cosine for better convergence
 LR_WARMUP_STEPS=1000
 CHECKPOINTING_STEPS=2000
 VALIDATION_STEPS=500
@@ -29,16 +29,16 @@ VIDEO_DIR="RGB_480"
 MASK_DIR="MASK_480"
 GT_DIR="GT_480"
 IMAGE_SIZE=480
+RANDOM_FLIP_H=0.5  # Add horizontal flip probability
+RANDOM_FLIP_V=0.0  # Disable vertical flips
 
 # Model settings
-MIXED_PRECISION="bf16"  # Using bfloat16 for better numerical stability
-RANDOM_FLIP_H=0.5
-RANDOM_FLIP_V=0.5
+MIXED_PRECISION="bf16"  # Keep bfloat16 for better numerical stability
 WINDOW_SIZE=16  # Reduced from 32
 OVERLAP=4  # Reduced from 8
 CHUNK_SIZE=32  # Reduced from 64
 VAE_PRECISION="bf16"
-NUM_WORKERS=2  # Reduced for better memory management
+NUM_WORKERS=2  # Keep reduced workers for memory efficiency
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do

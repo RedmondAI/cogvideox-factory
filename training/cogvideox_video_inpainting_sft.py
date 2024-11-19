@@ -1135,13 +1135,12 @@ def main(args):
         mask_dir=args.mask_dir,
         gt_dir=args.gt_dir,
         num_frames=args.num_frames,
+        frame_stride=2,  # Add frame stride for temporal sampling
         image_size=args.image_size,
+        center_crop=True,  # Enable center cropping for consistent frame sizes
+        normalize=True,  # Enable normalization to [-1,1] range
         random_flip_h=args.random_flip_h,
         random_flip_v=args.random_flip_v,
-        window_size=args.window_size,
-        overlap=args.overlap,
-        chunk_size=args.chunk_size,
-        vae_precision=args.vae_precision,
     )
 
     val_dataset = VideoInpaintingDataset(
@@ -1150,13 +1149,12 @@ def main(args):
         mask_dir=args.mask_dir,
         gt_dir=args.gt_dir,
         num_frames=args.num_frames,
+        frame_stride=2,  # Add frame stride for temporal sampling
         image_size=args.image_size,
-        random_flip_h=0.0,
-        random_flip_v=0.0,
-        window_size=args.window_size,
-        overlap=args.overlap,
-        chunk_size=args.chunk_size,
-        vae_precision=args.vae_precision,
+        center_crop=True,  # Enable center cropping for consistent frame sizes
+        normalize=True,  # Enable normalization to [-1,1] range
+        random_flip_h=0.0,  # Disable random flips for validation
+        random_flip_v=0.0,  # Disable random flips for validation
     )
 
     train_dataloader = DataLoader(
