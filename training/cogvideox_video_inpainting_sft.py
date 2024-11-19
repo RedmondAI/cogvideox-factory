@@ -1377,6 +1377,7 @@ def main(args):
         accelerator.save_state(save_path)
 
 if __name__ == "__main__":
+    import argparse
     import sys
     from pathlib import Path
     
@@ -1385,8 +1386,36 @@ if __name__ == "__main__":
     if project_root not in sys.path:
         sys.path.append(project_root)
     
-    from args import get_args
-    args = get_args()
+    parser = argparse.ArgumentParser(description="Train CogVideoX for video inpainting")
+    parser.add_argument("--pretrained_model_name_or_path", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, required=True)
+    parser.add_argument("--data_root", type=str, required=True)
+    parser.add_argument("--video_dir", type=str, default="RGB_480")
+    parser.add_argument("--mask_dir", type=str, default="MASK_480")
+    parser.add_argument("--gt_dir", type=str, default="GT_480")
+    parser.add_argument("--image_size", type=int, default=480)
+    parser.add_argument("--train_batch_size", type=int, default=1)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=32)
+    parser.add_argument("--max_num_frames", type=int, default=32)
+    parser.add_argument("--num_train_epochs", type=int, default=100)
+    parser.add_argument("--learning_rate", type=float, default=1e-5)
+    parser.add_argument("--lr_warmup_steps", type=int, default=1000)
+    parser.add_argument("--checkpointing_steps", type=int, default=2000)
+    parser.add_argument("--validation_steps", type=int, default=500)
+    parser.add_argument("--mixed_precision", type=str, choices=["no", "fp16", "bf16"], default="bf16")
+    parser.add_argument("--vae_precision", type=str, choices=["fp16", "bf16"], default="bf16")
+    parser.add_argument("--window_size", type=int, default=16)
+    parser.add_argument("--overlap", type=int, default=4)
+    parser.add_argument("--chunk_size", type=int, default=32)
+    parser.add_argument("--random_flip_h", type=float, default=0.5)
+    parser.add_argument("--random_flip_v", type=float, default=0.5)
+    parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--enable_xformers_memory_efficient_attention", action="store_true")
+    parser.add_argument("--gradient_checkpointing", action="store_true")
+    parser.add_argument("--deepspeed_config", type=str, default=None)
+    parser.add_argument("--ignore_text_encoder", action="store_true", help="Run in text-free mode without text encoder")
+    parser.add_argument("--local_rank", type=int, default=0)
+    args = parser.parse_args()
     args.window_size = getattr(args, 'window_size', 32)
     args.overlap = getattr(args, 'overlap', 8)
     args.chunk_size = getattr(args, 'chunk_size', 32)
