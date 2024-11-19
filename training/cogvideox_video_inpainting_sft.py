@@ -541,6 +541,21 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         # Prepare for transformer
         latent_model_input = noisy_latents.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
         
+        # Get image rotary embeddings
+        image_rotary_emb = (
+            prepare_rotary_positional_embeddings(
+                height=video.shape[3] * 8,  # Scale back to pixel space
+                width=video.shape[4] * 8,
+                num_frames=video.shape[2],
+                vae_scale_factor_spatial=8,  # VAE spatial scaling factor
+                patch_size=self.transformer.config.patch_size,
+                attention_head_dim=self.transformer.config.attention_head_dim,
+                device=video.device,
+            )
+            if self.transformer.config.use_rotary_positional_embeddings
+            else None
+        )
+        
         # Denoise
         for i, t in enumerate(timesteps[:-1]):
             t_back = timesteps[i + 1]
@@ -550,7 +565,9 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 hidden_states=latent_model_input,
                 timestep=t,
                 encoder_hidden_states=encoder_hidden_states,
-            ).sample
+                image_rotary_emb=image_rotary_emb,
+                return_dict=False,
+            )[0]
             
             # Scheduler step
             latent_output = self.scheduler.step(
@@ -677,11 +694,27 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             noise = noise.permute(0, 2, 1, 3, 4)
             
             # Get model prediction
+            image_rotary_emb = (
+                prepare_rotary_positional_embeddings(
+                    height=video.shape[3] * 8,  # Scale back to pixel space
+                    width=video.shape[4] * 8,
+                    num_frames=video.shape[2],
+                    vae_scale_factor_spatial=8,  # VAE spatial scaling factor
+                    patch_size=self.transformer.config.patch_size,
+                    attention_head_dim=self.transformer.config.attention_head_dim,
+                    device=video.device,
+                )
+                if self.transformer.config.use_rotary_positional_embeddings
+                else None
+            )
+            
             noise_pred = self.transformer(
                 hidden_states=noisy_latents,
                 timestep=timesteps,
                 encoder_hidden_states=encoder_hidden_states,
-            ).sample
+                image_rotary_emb=image_rotary_emb,
+                return_dict=False,
+            )[0]
             
             # Compute loss with SNR rescaling
             loss = compute_loss_v_pred_with_snr(
@@ -906,10 +939,25 @@ def train_loop(
                 noisy_frames = noise_scheduler.add_noise(clean_frames, noise, timesteps)
                 
                 # Get model prediction
+                image_rotary_emb = (
+                    prepare_rotary_positional_embeddings(
+                        height=clean_frames.shape[3] * 8,  # Scale back to pixel space
+                        width=clean_frames.shape[4] * 8,
+                        num_frames=clean_frames.shape[2],
+                        vae_scale_factor_spatial=8,  # VAE spatial scaling factor
+                        patch_size=model.config.patch_size,
+                        attention_head_dim=model.config.attention_head_dim,
+                        device=clean_frames.device,
+                    )
+                    if model.config.use_rotary_positional_embeddings
+                    else None
+                )
+                
                 noise_pred = model(
                     hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
                     timestep=timesteps,
                     encoder_hidden_states=encoder_hidden_states,
+                    image_rotary_emb=image_rotary_emb,
                 ).sample
                 
                 # Verify shape consistency
@@ -972,10 +1020,25 @@ def train_loop(
                             )
                             noisy_frames = noise_scheduler.add_noise(clean_frames, noise, timesteps)
                             
+                            image_rotary_emb = (
+                                prepare_rotary_positional_embeddings(
+                                    height=clean_frames.shape[3] * 8,  # Scale back to pixel space
+                                    width=clean_frames.shape[4] * 8,
+                                    num_frames=clean_frames.shape[2],
+                                    vae_scale_factor_spatial=8,  # VAE spatial scaling factor
+                                    patch_size=model.config.patch_size,
+                                    attention_head_dim=model.config.attention_head_dim,
+                                    device=clean_frames.device,
+                                )
+                                if model.config.use_rotary_positional_embeddings
+                                else None
+                            )
+                            
                             noise_pred = model(
                                 hidden_states=noisy_frames,
                                 timestep=timesteps,
                                 encoder_hidden_states=None,  # No text conditioning during training
+                                image_rotary_emb=image_rotary_emb,
                             ).sample
                             val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
                     
@@ -1079,10 +1142,25 @@ def train_one_epoch(
                 torch.cuda.empty_cache()
                 
                 # Predict noise
+                image_rotary_emb = (
+                    prepare_rotary_positional_embeddings(
+                        height=frames.shape[3] * 8,  # Scale back to pixel space
+                        width=frames.shape[4] * 8,
+                        num_frames=frames.shape[2],
+                        vae_scale_factor_spatial=8,  # VAE spatial scaling factor
+                        patch_size=transformer.config.patch_size,
+                        attention_head_dim=transformer.config.attention_head_dim,
+                        device=frames.device,
+                    )
+                    if transformer.config.use_rotary_positional_embeddings
+                    else None
+                )
+                
                 noise_pred = transformer(
                     noisy_latents,
                     timesteps,
                     encoder_hidden_states=batch["prompt_embeds"],
+                    image_rotary_emb=image_rotary_emb,
                     return_dict=False,
                 )[0]
                 
