@@ -486,7 +486,11 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             Zero tensor of shape (batch_size, 1, 4096) - matches CogVideoX-5b hidden size
         """
         hidden_size = 4096  # Fixed size for CogVideoX-5b
-        encoder_hidden_states = torch.zeros(batch_size, 1, hidden_size, device=device, dtype=dtype)
+        encoder_hidden_states = torch.zeros(
+            (batch_size, 1, hidden_size),
+            device=device,
+            dtype=dtype
+        )
         
         # Validate shape and type
         assert encoder_hidden_states.shape == (batch_size, 1, hidden_size), \
@@ -655,8 +659,8 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         mask = batch["mask"].to(device=device, dtype=dtype)  # [B, 1, T, H, W]
         
         # Create encoder hidden states (zero conditioning for inpainting)
-        encoder_hidden_states = self.prepare_encoder_hidden_states(
-            batch_size=video.shape[0],
+        encoder_hidden_states = torch.zeros(
+            (video.shape[0], 1, self.transformer.config.text_embed_dim),
             device=device,
             dtype=dtype
         )
@@ -693,7 +697,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             mask_latents = mask_latents.permute(0, 2, 1, 3, 4)
             noise = noise.permute(0, 2, 1, 3, 4)
             
-            # Get model prediction
+            # Get image rotary embeddings
             image_rotary_emb = (
                 prepare_rotary_positional_embeddings(
                     height=video_latents.shape[3] * 8,  # Scale back to pixel space
@@ -708,6 +712,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 else None
             )
             
+            # Predict noise residual
             noise_pred = self.transformer(
                 hidden_states=noisy_latents,
                 timestep=timesteps,
@@ -720,11 +725,12 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
             noise = noise.permute(0, 2, 1, 3, 4)
             noisy_latents = noisy_latents.permute(0, 2, 1, 3, 4)
+            mask_latents = mask_latents.permute(0, 2, 1, 3, 4)
             
             # Compute loss with SNR rescaling
             loss = compute_loss_v_pred_with_snr(
                 noise_pred, noise, timesteps, self.scheduler,
-                mask=mask_latents.permute(0, 2, 1, 3, 4),  # Convert mask back to [B, C, T, H, W]
+                mask=mask_latents,
                 noisy_frames=noisy_latents
             )
         
