@@ -1128,6 +1128,52 @@ def main(args):
         eps=args.epsilon,
     )
 
+    # Dataset and DataLoaders creation
+    train_dataset = VideoInpaintingDataset(
+        data_root=args.data_root,
+        video_dir=args.video_dir,
+        mask_dir=args.mask_dir,
+        gt_dir=args.gt_dir,
+        image_size=args.image_size,
+        max_num_frames=args.max_num_frames,
+        window_size=args.window_size,
+        overlap=args.overlap,
+        chunk_size=args.chunk_size,
+        random_flip_h=args.random_flip_h,
+        random_flip_v=args.random_flip_v,
+    )
+
+    val_dataset = VideoInpaintingDataset(
+        data_root=args.data_root,
+        video_dir=args.video_dir,
+        mask_dir=args.mask_dir,
+        gt_dir=args.gt_dir,
+        image_size=args.image_size,
+        max_num_frames=args.max_num_frames,
+        window_size=args.window_size,
+        overlap=args.overlap,
+        chunk_size=args.chunk_size,
+        random_flip_h=0.0,
+        random_flip_v=0.0,
+        validation=True,
+    )
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=args.train_batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        collate_fn=collate_fn,
+    )
+
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=args.eval_batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=collate_fn,
+    )
+
     # Calculate max training steps
     args.max_train_steps = args.num_train_epochs * len(train_dataloader) // args.gradient_accumulation_steps
 
@@ -1138,46 +1184,7 @@ def main(args):
         num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
         num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
     )
-    
-    # Dataset and DataLoaders creation
-    train_dataset = VideoInpaintingDataset(
-        data_root=args.data_root,
-        video_dir=args.video_dir,
-        mask_dir=args.mask_dir,
-        gt_dir=args.gt_dir,
-        image_size=args.image_size,
-        num_frames=args.max_num_frames,
-        center_crop=True,
-        normalize=True
-    )
-    
-    val_dataset = VideoInpaintingDataset(
-        data_root=args.data_root,
-        video_dir=args.video_dir,
-        mask_dir=args.mask_dir,
-        gt_dir=args.gt_dir,
-        image_size=args.image_size,
-        num_frames=args.max_num_frames,
-        center_crop=True,
-        normalize=True
-    )
-    
-    train_dataloader = DataLoader(
-        train_dataset,
-        batch_size=args.train_batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        collate_fn=collate_fn,
-    )
-    
-    val_dataloader = DataLoader(
-        val_dataset,
-        batch_size=args.eval_batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=collate_fn,
-    )
-    
+
     # Calculate training steps
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     args.num_warmup_steps = args.lr_warmup_steps * args.gradient_accumulation_steps
