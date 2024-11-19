@@ -15,6 +15,11 @@ GRADIENT_ACCUMULATION_STEPS=32  # Increased to maintain effective batch size
 MAX_NUM_FRAMES=32  # Reduced from 49 for memory efficiency
 NUM_TRAIN_EPOCHS=100
 LEARNING_RATE=1e-5
+BETA1=0.9
+BETA2=0.999
+WEIGHT_DECAY=1e-2
+EPSILON=1e-8
+LR_SCHEDULER="constant"
 LR_WARMUP_STEPS=1000
 CHECKPOINTING_STEPS=2000
 VALIDATION_STEPS=500
@@ -66,6 +71,26 @@ while [[ $# -gt 0 ]]; do
       LEARNING_RATE="$2"
       shift 2
       ;;
+    --beta1)
+      BETA1="$2"
+      shift 2
+      ;;
+    --beta2)
+      BETA2="$2"
+      shift 2
+      ;;
+    --weight_decay)
+      WEIGHT_DECAY="$2"
+      shift 2
+      ;;
+    --epsilon)
+      EPSILON="$2"
+      shift 2
+      ;;
+    --lr_scheduler)
+      LR_SCHEDULER="$2"
+      shift 2
+      ;;
     --window_size)
       WINDOW_SIZE="$2"
       shift 2
@@ -103,6 +128,11 @@ deepspeed training/cogvideox_video_inpainting_sft.py \
     --max_num_frames $MAX_NUM_FRAMES \
     --num_train_epochs $NUM_TRAIN_EPOCHS \
     --learning_rate $LEARNING_RATE \
+    --beta1 $BETA1 \
+    --beta2 $BETA2 \
+    --weight_decay $WEIGHT_DECAY \
+    --epsilon $EPSILON \
+    --lr_scheduler $LR_SCHEDULER \
     --lr_warmup_steps $LR_WARMUP_STEPS \
     --checkpointing_steps $CHECKPOINTING_STEPS \
     --validation_steps $VALIDATION_STEPS \
