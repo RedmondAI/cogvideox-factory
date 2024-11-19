@@ -421,8 +421,8 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         return latents
     
     except Exception as e:
-        print(f"Error in encode: {str(e)}")
-        traceback.print_exc()
+        logger.error(f"Error in encode: {str(e)}")
+        logger.error(f"Stack trace: {traceback.format_exc()}")
         raise e
     
     @torch.no_grad()
