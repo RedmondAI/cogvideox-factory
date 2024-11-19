@@ -497,9 +497,9 @@ class CogVideoXInpaintingPipeline:
             
             # Predict noise residual
             model_output = self.transformer(
-                latent_model_input,
-                t,
-                encoder_hidden_states=None,  # No text conditioning for inpainting
+                hidden_states=latent_model_input,
+                timestep=t,
+                encoder_hidden_states=None,  # Set to None for inpainting
                 image_rotary_emb=None,
                 return_dict=True
             )
@@ -626,7 +626,7 @@ class CogVideoXInpaintingPipeline:
         model_output = self.transformer(
             hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
             timestep=timesteps.to(dtype=self.weight_dtype),
-            encoder_hidden_states=None,  # Don't use text conditioning
+            encoder_hidden_states=None,  # Set to None for inpainting
             image_rotary_emb=image_rotary_emb,
             return_dict=True
         )
@@ -1098,7 +1098,7 @@ def train_one_epoch(
                 model_output = transformer(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
+                    encoder_hidden_states=None,  # Set to None for inpainting
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
                 )
