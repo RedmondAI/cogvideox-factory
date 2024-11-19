@@ -565,110 +565,48 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         return mean_diff, max_diff
 
     def training_step(self, batch):
-        """
-        Perform a single training step.
-        
-        Args:
-            batch: Dictionary containing:
-                - rgb: Input video frames [B, C, T, H, W]
-                - mask: Binary mask [B, 1, T, H, W]
-                
-        Returns:
-            loss: Training loss for this batch
-        """
-        # Clear cache before processing
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        # Move models to correct device and dtype if needed
-        device = batch["rgb"].device
-        dtype = batch["rgb"].dtype
-        
-        # Get input tensors with memory-efficient casting
-        video = batch["rgb"].to(device=device, dtype=dtype)  # [B, C, T, H, W]
-        mask = batch["mask"].to(device=device, dtype=dtype)  # [B, 1, T, H, W]
-        
-        # Create encoder hidden states (zero conditioning for inpainting)
-        encoder_hidden_states = torch.zeros(
-            (video.shape[0], 1, self.transformer.config.text_embed_dim),
-            device=device,
-            dtype=dtype
+        """Execute a training step on a batch of inputs."""
+        clean_frames = batch["rgb"].to(device=self.device, dtype=self.weight_dtype)
+        masks = batch["mask"].to(device=self.device, dtype=self.weight_dtype)
+        gt_frames = batch["gt"].to(device=self.device, dtype=self.weight_dtype)
+
+        # First encode through VAE
+        with torch.no_grad():
+            # Encode clean frames
+            clean_latents = self.vae.encode(clean_frames).latent_dist.sample()
+            clean_latents = clean_latents * self.vae.config.scaling_factor
+
+            # Encode ground truth frames
+            gt_latents = self.vae.encode(gt_frames).latent_dist.sample()
+            gt_latents = gt_latents * self.vae.config.scaling_factor
+
+            # Downsample masks to match latent resolution
+            masks = F.interpolate(masks, size=clean_latents.shape[-2:], mode="nearest")
+
+        # Add noise to latents
+        noise = torch.randn_like(clean_latents)
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (clean_latents.shape[0],), device=self.device)
+        noisy_latents = self.noise_scheduler.add_noise(clean_latents, noise, timesteps)
+
+        # Convert to [B, T, C, H, W] format for transformer
+        noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
+
+        # Get model prediction
+        noise_pred = self.transformer(
+            hidden_states=noisy_frames,
+            timestep=timesteps.to(dtype=self.weight_dtype),
+            encoder_hidden_states=None,  # No text conditioning for inpainting
+        ).sample
+
+        # Convert predictions back to scheduler format [B, C, T, H, W]
+        noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
+
+        # Compute loss with SNR scaling and masking
+        loss = compute_loss_v_pred_with_snr(
+            noise_pred, noise, timesteps, self.noise_scheduler,
+            mask=masks, noisy_frames=noisy_latents
         )
-        
-        # Convert video to latent space with memory-efficient encoding
-        with torch.amp.autocast(device_type='cuda', enabled=True, dtype=dtype):
-            # Encode input video
-            video_latents = self.vae.encode(video).latent_dist.sample()
-            video_latents = video_latents * self.vae.config.scaling_factor
-            
-            # Convert mask to latent space
-            mask_latents = F.interpolate(
-                mask,
-                size=(
-                    mask.shape[2],  # Keep temporal dimension
-                    video_latents.shape[3],  # Downscale spatial dims
-                    video_latents.shape[4]
-                ),
-                mode="nearest"
-            )
-            
-            # Sample timesteps
-            timesteps = torch.randint(
-                0, self.scheduler.config.num_train_timesteps,
-                (video_latents.shape[0],), device=device
-            )
-            
-            # Add noise
-            noise = torch.randn_like(video_latents)
-            noisy_latents = self.scheduler.add_noise(video_latents, noise, timesteps)
-            
-            # Convert to [B, T, C, H, W] format for transformer
-            noisy_latents = noisy_latents.permute(0, 2, 1, 3, 4)
-            mask_latents = mask_latents.permute(0, 2, 1, 3, 4)
-            noise = noise.permute(0, 2, 1, 3, 4)
-            
-            # Get image rotary embeddings
-            image_rotary_emb = (
-                prepare_rotary_positional_embeddings(
-                    height=video_latents.shape[3] * 8,  # Scale back to pixel space
-                    width=video_latents.shape[4] * 8,
-                    num_frames=video_latents.shape[2],
-                    vae_scale_factor_spatial=8,  # VAE spatial scaling factor
-                    patch_size=self.transformer.config.patch_size,
-                    attention_head_dim=self.transformer.config.attention_head_dim,
-                    device=device,
-                )
-                if self.transformer.config.use_rotary_positional_embeddings
-                else None
-            )
-            
-            # Predict noise residual
-            noise_pred = self.transformer(
-                hidden_states=noisy_latents,  # Already in [B, T, C, H, W] format
-                timestep=timesteps,
-                encoder_hidden_states=None if self.ignore_text_encoder else encoder_hidden_states,
-                image_rotary_emb=image_rotary_emb,
-                return_dict=False,
-            )[0]
-            
-            # Convert back to [B, C, T, H, W] format for loss computation
-            noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
-            noise = noise.permute(0, 2, 1, 3, 4)
-            noisy_latents = noisy_latents.permute(0, 2, 1, 3, 4)
-            mask_latents = mask_latents.permute(0, 2, 1, 3, 4)
-            
-            # Compute loss with SNR rescaling
-            loss = compute_loss_v_pred_with_snr(
-                noise_pred, noise, timesteps, self.scheduler,
-                mask=mask_latents,
-                noisy_frames=noisy_latents
-            )
-        
-        # Clear intermediate tensors
-        del noise, noisy_latents, video_latents, mask_latents
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
+
         return loss
     
 def collate_fn(examples):
@@ -1141,80 +1079,56 @@ def train_one_epoch(
     progress_bar.close()
 
 def main(args):
-    logging_dir = Path(args.output_dir, args.logging_dir)
-    
-    accelerator_project_config = ProjectConfiguration(
-        project_dir=args.output_dir,
-        logging_dir=logging_dir,
-    )
-    
-    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    """Main training function."""
+    # Initialize accelerator
+    accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
-        log_with=args.report_to,
         project_config=accelerator_project_config,
-        kwargs_handlers=[kwargs],
     )
 
-    # Create pipeline components
-    if args.ignore_text_encoder:
-        logger.info("Initializing pipeline without text encoder for text-free inpainting")
-        text_encoder = None
-    else:
-        text_encoder = CLIPTextModelWithProjection.from_pretrained(
-            args.pretrained_model_name_or_path,
-            subfolder="text_encoder",
-            revision=args.revision,
-        )
-    
-    # Load models with memory optimizations
-    vae = AutoencoderKLCogVideoX.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="vae",
-        torch_dtype=torch.bfloat16 if "5b" in args.pretrained_model_name_or_path.lower() else torch.float16,
-        low_cpu_mem_usage=True
-    )
-    vae.requires_grad_(False)  # Freeze VAE
-    vae.eval()  # Ensure VAE is in eval mode
-    
-    # Set CUDA memory allocation config
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,garbage_collection_threshold:0.8,expandable_segments:True"
-    
-    transformer = CogVideoXTransformer3DModel.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="transformer",
-        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else (torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32),
-        use_memory_efficient_attention=True,  # Enable memory efficient attention
-        use_gradient_checkpointing=True,  # Enable gradient checkpointing
-        low_cpu_mem_usage=True
-    )
-    
-    # Additional memory optimizations
-    if hasattr(transformer, "enable_gradient_checkpointing"):
-        transformer.enable_gradient_checkpointing()
-    elif hasattr(transformer, "gradient_checkpointing"):
-        transformer.gradient_checkpointing = True
-        
-    if hasattr(transformer, "set_use_memory_efficient_attention_xformers"):
-        transformer.set_use_memory_efficient_attention_xformers(True)
-    
-    scheduler = CogVideoXDPMScheduler.from_pretrained(
+    # Load models
+    noise_scheduler = CogVideoXDPMScheduler.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="scheduler",
     )
-    
-    # Update scheduler config
-    scheduler.config.prediction_type = "v_prediction"
-    scheduler.config.rescale_betas_zero_snr = True
-    scheduler.config.snr_shift_scale = 1.0
-    
-    # Create pipeline
+
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="vae",
+        torch_dtype=torch.float16 if args.vae_precision == "fp16" else torch.bfloat16,
+    )
+
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="transformer",
+        torch_dtype=torch.float16 if args.mixed_precision == "fp16" else torch.bfloat16,
+    )
+
+    # Create training pipeline
     pipeline = CogVideoXInpaintingPipeline(
         vae=vae,
         transformer=transformer,
-        scheduler=scheduler,
-        args=args,
+        scheduler=noise_scheduler,
+        ignore_text_encoder=args.ignore_text_encoder,
+    )
+
+    # Create optimizer
+    optimizer = torch.optim.AdamW(
+        transformer.parameters(),
+        lr=args.learning_rate,
+        betas=(args.beta1, args.beta2),
+        weight_decay=args.weight_decay,
+        eps=args.epsilon,
+    )
+
+    # Create learning rate scheduler
+    lr_scheduler = get_scheduler(
+        args.lr_scheduler,
+        optimizer=optimizer,
+        num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
+        num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
     )
     
     # Dataset and DataLoaders creation
@@ -1261,25 +1175,6 @@ def main(args):
     args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     args.num_warmup_steps = args.lr_warmup_steps * args.gradient_accumulation_steps
     args.num_training_steps = args.max_train_steps * args.gradient_accumulation_steps
-    
-    # Optimizer
-    if args.use_8bit_adam:
-        import bitsandbytes as bnb
-        optimizer = bnb.optim.AdamW8bit(
-            transformer.parameters(),
-            lr=args.learning_rate,
-            betas=(args.beta1, args.beta2),
-            weight_decay=args.weight_decay,
-            eps=args.epsilon,
-        )
-    else:
-        optimizer = torch.optim.AdamW(
-            transformer.parameters(),
-            lr=args.learning_rate,
-            betas=(args.beta1, args.beta2),
-            weight_decay=args.weight_decay,
-            eps=args.epsilon,
-        )
     
     # Prepare for distributed training
     pipeline, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
