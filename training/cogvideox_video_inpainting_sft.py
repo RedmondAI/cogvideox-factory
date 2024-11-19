@@ -1395,6 +1395,7 @@ if __name__ == "__main__":
     parser.add_argument("--gt_dir", type=str, default="GT_480")
     parser.add_argument("--image_size", type=int, default=480)
     parser.add_argument("--train_batch_size", type=int, default=1)
+    parser.add_argument("--eval_batch_size", type=int, default=1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=32)
     parser.add_argument("--max_num_frames", type=int, default=32)
     parser.add_argument("--num_train_epochs", type=int, default=100)
