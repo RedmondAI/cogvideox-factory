@@ -396,34 +396,34 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                     
                     if self.vae.device == torch.device('cpu'):
                         chunk_latents = chunk_latents.to(vae_device)
+                
+                # Handle temporal compression
+                target_frames = (t_end - t_start) // temporal_ratio
+                if chunk_latents.shape[2] > target_frames:
+                    start_idx = (chunk_latents.shape[2] - target_frames) // 2
+                    chunk_latents = chunk_latents[:, :, start_idx:start_idx + target_frames]
+                
+                temporal_latents.append(chunk_latents)
+                
+                # Clear chunk from memory
+                del chunk_latents, x_chunk
+                torch.cuda.empty_cache()
             
-            # Handle temporal compression
-            target_frames = (t_end - t_start) // temporal_ratio
-            if chunk_latents.shape[2] > target_frames:
-                start_idx = (chunk_latents.shape[2] - target_frames) // 2
-                chunk_latents = chunk_latents[:, :, start_idx:start_idx + target_frames]
+            # Move VAE back to original device
+            if self.vae.device == torch.device('cpu'):
+                self.vae = self.vae.to(vae_device)
             
-            temporal_latents.append(chunk_latents)
-            
-            # Clear chunk from memory
-            del chunk_latents, x_chunk
+            # Concatenate temporal chunks
+            latents = torch.cat(temporal_latents, dim=2)
+            del temporal_latents
             torch.cuda.empty_cache()
-        
-        # Move VAE back to original device
-        if self.vae.device == torch.device('cpu'):
-            self.vae = self.vae.to(vae_device)
-        
-        # Concatenate temporal chunks
-        latents = torch.cat(temporal_latents, dim=2)
-        del temporal_latents
-        torch.cuda.empty_cache()
-        
-        return latents
-    
-    except Exception as e:
-        logger.error(f"Error in encode: {str(e)}")
-        logger.error(f"Stack trace: {traceback.format_exc()}")
-        raise e
+            
+            return latents
+            
+        except Exception as e:
+            logger.error(f"Error in encode: {str(e)}")
+            logger.error(f"Stack trace: {traceback.format_exc()}")
+            raise e
     
     @torch.no_grad()
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
