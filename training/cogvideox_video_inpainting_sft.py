@@ -629,8 +629,8 @@ class CogVideoXInpaintingPipeline:
             encoder_hidden_states=torch.zeros((batch_size, 1, self.transformer.config.text_embed_dim), device=device, dtype=dtype),  # Use zero tensor instead of None
             image_rotary_emb=image_rotary_emb,
             return_dict=True
-        )
-        noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
+        ).sample  # Access .sample directly instead of unpacking
+        noise_pred = model_output
         
         # Convert predictions back to [B, C, T, H, W] format
         noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
@@ -882,8 +882,8 @@ def train_loop(
                     encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
-                )
-                noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
+                ).sample  # Access .sample directly instead of unpacking
+                noise_pred = model_output
                 
                 # Verify shape consistency
                 assert noise_pred.shape == noisy_frames.shape, \
@@ -971,8 +971,8 @@ def train_loop(
                                 encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                                 image_rotary_emb=image_rotary_emb,
                                 return_dict=True
-                            )
-                            noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
+                            ).sample  # Access .sample directly instead of unpacking
+                            noise_pred = model_output
                             val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
                     
                     val_loss /= len(val_dataloader)
@@ -1101,8 +1101,8 @@ def train_one_epoch(
                     encoder_hidden_states=torch.zeros((batch_size, 1, transformer.config.text_embed_dim), device=device, dtype=dtype),  # Use zero tensor instead of None
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
-                )
-                noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
+                ).sample  # Access .sample directly instead of unpacking
+                noise_pred = model_output
                 
                 # Compute loss
                 loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
