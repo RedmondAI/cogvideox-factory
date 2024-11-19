@@ -93,31 +93,35 @@ def unwrap_model(model):
         return model.module
     return model
 
-class CogVideoXInpaintingPipeline(BasePipeline):
+class CogVideoXInpaintingPipeline:
+    """Pipeline for training CogVideoX on video inpainting."""
+    
     def __init__(
         self,
-        vae: AutoencoderKLCogVideoX,
-        transformer: CogVideoXTransformer3DModel,
-        scheduler: CogVideoXDPMScheduler,
-        args=None,
+        vae,
+        transformer,
+        scheduler,
+        device=None,
+        dtype=None
     ):
-        # Initialize without text encoder and tokenizer since they're not needed for inpainting
-        super().__init__(vae, transformer, scheduler)
+        """Initialize the pipeline."""
+        self.vae = vae
+        self.transformer = transformer
+        self.noise_scheduler = scheduler
+        self.device = device
+        self.weight_dtype = dtype
         
-        # Store if we should ignore text encoder
-        self.ignore_text_encoder = getattr(args, 'ignore_text_encoder', False)
+        # Freeze VAE
+        self.vae.requires_grad_(False)
+        self.vae.eval()
         
         # Set processing parameters
-        self.chunk_size = getattr(args, 'chunk_size', 32) if args else 32
-        self.overlap = getattr(args, 'overlap', 4) if args else 4
-        self.max_resolution = getattr(args, 'max_resolution', 512) if args else 512
+        self.chunk_size = 32
+        self.overlap = 4
+        self.max_resolution = 512
         
         # Set memory optimization
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,garbage_collection_threshold:0.8,expandable_segments:True"
-        
-        # Store model references
-        self.transformer = transformer
-        self.vae = vae
         
         # Enable gradient checkpointing for transformer
         if hasattr(self.transformer, 'gradient_checkpointing'):
@@ -384,7 +388,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             width//vae_spatial_ratio     # VAE spatial compression (8x)
         )
         latents = torch.randn(latents_shape, generator=generator, device=self.device, dtype=self.dtype)
-        latents = latents * self.scheduler.init_noise_sigma
+        latents = latents * self.noise_scheduler.init_noise_sigma
         return latents
     
     def prepare_mask(self, mask: torch.Tensor) -> torch.Tensor:
@@ -472,12 +476,12 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         latents = self.encode(frames)["latents"]
         
         # Set timesteps
-        self.scheduler.set_timesteps(num_inference_steps)
-        timesteps = self.scheduler.timesteps
+        self.noise_scheduler.set_timesteps(num_inference_steps)
+        timesteps = self.noise_scheduler.timesteps
         
         # Add noise to latents
         noise = torch.randn(latents.shape, generator=generator, device=device)
-        latents = self.scheduler.add_noise(latents, noise, timesteps[0])
+        latents = self.noise_scheduler.add_noise(latents, noise, timesteps[0])
         
         # Prepare extra step kwargs
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -493,7 +497,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             noise_pred = self.transformer(
                 latent_model_input,
                 t,
-                encoder_hidden_states=None if self.ignore_text_encoder else None,  # No text conditioning
+                encoder_hidden_states=None,  # No text conditioning
                 image_rotary_emb=None,
                 return_dict=False,
             )[0]
@@ -504,7 +508,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
             
             # Compute previous noisy sample
-            latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+            latents = self.noise_scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
             
             # Apply mask
             if mask is not None:
@@ -1111,7 +1115,8 @@ def main(args):
         vae=vae,
         transformer=transformer,
         scheduler=noise_scheduler,
-        ignore_text_encoder=args.ignore_text_encoder,
+        device=accelerator.device,
+        dtype=accelerator.dtype
     )
 
     # Create optimizer
