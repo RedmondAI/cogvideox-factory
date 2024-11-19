@@ -501,9 +501,9 @@ class CogVideoXInpaintingPipeline:
                 t,
                 encoder_hidden_states=None,  # No text conditioning for inpainting
                 image_rotary_emb=None,
-                return_dict=False
+                return_dict=True
             )
-            noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
+            noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
             
             # Perform guidance
             if do_classifier_free_guidance:
@@ -628,10 +628,10 @@ class CogVideoXInpaintingPipeline:
             timestep=timesteps.to(dtype=self.weight_dtype),
             encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
             image_rotary_emb=image_rotary_emb,
-            return_dict=False
+            return_dict=True
         )
-        noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
-
+        noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
+        
         # Convert predictions back to [B, C, T, H, W] format
         noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
 
@@ -881,9 +881,9 @@ def train_loop(
                     timestep=timesteps.to(dtype=model_dtype),
                     encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                     image_rotary_emb=image_rotary_emb,
-                    return_dict=False
+                    return_dict=True
                 )
-                noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
+                noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
                 
                 # Verify shape consistency
                 assert noise_pred.shape == noisy_frames.shape, \
@@ -970,9 +970,9 @@ def train_loop(
                                 timestep=timesteps,
                                 encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                                 image_rotary_emb=image_rotary_emb,
-                                return_dict=False
+                                return_dict=True
                             )
-                            noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
+                            noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
                             val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
                     
                     val_loss /= len(val_dataloader)
@@ -1100,9 +1100,9 @@ def train_one_epoch(
                     timesteps,
                     encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                     image_rotary_emb=image_rotary_emb,
-                    return_dict=False
+                    return_dict=True
                 )
-                noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
+                noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
                 
                 # Compute loss
                 loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
