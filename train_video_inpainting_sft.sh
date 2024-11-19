@@ -108,7 +108,7 @@ deepspeed training/cogvideox_video_inpainting_sft.py \
     --random_flip_h $RANDOM_FLIP_H \
     --random_flip_v $RANDOM_FLIP_V \
     --num_workers $NUM_WORKERS \
-    --disable_text_conditioning \
-    --zero_text_embeddings \
+    --enable_xformers_memory_efficient_attention \
+    --gradient_checkpointing \
     --deepspeed_config configs/deepspeed/ds_config_zero3.json \
     "$@"
