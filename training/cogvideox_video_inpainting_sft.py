@@ -503,7 +503,7 @@ class CogVideoXInpaintingPipeline:
                 image_rotary_emb=None,
                 return_dict=False,
             )
-            noise_pred = model_output[0]
+            noise_pred = model_output.sample
             
             # Perform guidance
             if do_classifier_free_guidance:
@@ -624,7 +624,7 @@ class CogVideoXInpaintingPipeline:
             image_rotary_emb=image_rotary_emb,
             return_dict=False,
         )
-        noise_pred = model_output[0]
+        noise_pred = model_output.sample
 
         # Convert predictions back to [B, C, T, H, W] format
         noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
@@ -870,7 +870,7 @@ def train_loop(
                     encoder_hidden_states=torch.zeros((noisy_frames.shape[0], 1, 4096), device=noisy_frames.device, dtype=model_dtype),
                     image_rotary_emb=image_rotary_emb,
                 )
-                noise_pred = model_output[0]
+                noise_pred = model_output.sample
                 
                 # Verify shape consistency
                 assert noise_pred.shape == noisy_frames.shape, \
@@ -952,7 +952,7 @@ def train_loop(
                                 encoder_hidden_states=torch.zeros((noisy_frames.shape[0], 1, 4096), device=noisy_frames.device, dtype=model_dtype),
                                 image_rotary_emb=image_rotary_emb,
                             )
-                            noise_pred = model_output[0]
+                            noise_pred = model_output.sample
                             val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
                     
                     val_loss /= len(val_dataloader)
@@ -1076,7 +1076,7 @@ def train_one_epoch(
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,
                 )
-                noise_pred = model_output[0]
+                noise_pred = model_output.sample
                 
                 # Compute loss
                 loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
