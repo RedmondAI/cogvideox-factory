@@ -11,6 +11,7 @@ def get_args():
     parser.add_argument("--revision", type=str, default=None)
     parser.add_argument("--variant", type=str, default=None)
     parser.add_argument("--local_rank", type=int, default=0)  # Add local_rank for distributed training
+    parser.add_argument("--ignore_text_encoder", action="store_true", help="Ignore text encoder for text-free inpainting")
     
     # Data configuration
     parser.add_argument("--data_root", type=str, required=True)

@@ -103,6 +103,9 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         # Initialize without text encoder and tokenizer since they're not needed for inpainting
         super().__init__(vae, transformer, scheduler)
         
+        # Store if we should ignore text encoder
+        self.ignore_text_encoder = getattr(args, 'ignore_text_encoder', False)
+        
         # Set processing parameters
         self.chunk_size = getattr(args, 'chunk_size', 32) if args else 32
         self.overlap = getattr(args, 'overlap', 4) if args else 4
@@ -489,8 +492,10 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             noise_pred = self.transformer(
                 latent_model_input,
                 t,
-                encoder_hidden_states=None,  # No text conditioning
-            )
+                encoder_hidden_states=None if self.ignore_text_encoder else None,  # No text conditioning
+                image_rotary_emb=None,
+                return_dict=False,
+            )[0]
             
             # Perform guidance
             if do_classifier_free_guidance:
@@ -640,7 +645,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             noise_pred = self.transformer(
                 hidden_states=noisy_latents,  # Already in [B, T, C, H, W] format
                 timestep=timesteps,
-                encoder_hidden_states=encoder_hidden_states,
+                encoder_hidden_states=None if self.ignore_text_encoder else encoder_hidden_states,
                 image_rotary_emb=image_rotary_emb,
                 return_dict=False,
             )[0]
@@ -891,7 +896,7 @@ def train_loop(
                 noise_pred = model(
                     hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
                     timestep=timesteps,
-                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_hidden_states=None if model.ignore_text_encoder else encoder_hidden_states,
                     image_rotary_emb=image_rotary_emb,
                 ).sample
                 
@@ -972,7 +977,7 @@ def train_loop(
                             noise_pred = model(
                                 hidden_states=noisy_frames,
                                 timestep=timesteps,
-                                encoder_hidden_states=None,  # No text conditioning during training
+                                encoder_hidden_states=None if model.ignore_text_encoder else None,  # No text conditioning during training
                                 image_rotary_emb=image_rotary_emb,
                             ).sample
                             val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
