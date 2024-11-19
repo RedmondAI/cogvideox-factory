@@ -595,20 +595,37 @@ class CogVideoXInpaintingPipeline:
         # Convert to [B, T, C, H, W] format for transformer
         noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
 
-        # Get model prediction
+        # Prepare rotary embeddings for spatial positions
+        image_rotary_emb = prepare_rotary_positional_embeddings(
+            height=clean_frames.shape[3],  # Original pixel space height
+            width=clean_frames.shape[4],   # Original pixel space width
+            num_frames=clean_frames.shape[2],
+            vae_scale_factor_spatial=8,  # VAE's spatial compression ratio
+            patch_size=self.transformer.config.patch_size,
+            attention_head_dim=self.transformer.config.attention_head_dim,
+            device=self.device,
+        ) if self.transformer.config.use_rotary_positional_embeddings else None
+
+        # Get model prediction without text conditioning
         noise_pred = self.transformer(
             hidden_states=noisy_frames,
             timestep=timesteps.to(dtype=self.weight_dtype),
             encoder_hidden_states=None,  # No text conditioning for inpainting
-        ).sample
+            image_rotary_emb=image_rotary_emb,
+            return_dict=False,
+        )[0]
 
-        # Convert predictions back to scheduler format [B, C, T, H, W]
+        # Convert predictions back to [B, C, T, H, W] format
         noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
 
-        # Compute loss with SNR scaling and masking
+        # Compute loss with SNR scaling
         loss = compute_loss_v_pred_with_snr(
-            noise_pred, noise, timesteps, self.noise_scheduler,
-            mask=masks, noisy_frames=noisy_latents
+            noise_pred=noise_pred,
+            noise=noise,
+            timesteps=timesteps,
+            scheduler=self.noise_scheduler,
+            mask=masks,
+            noisy_frames=noisy_latents
         )
 
         return loss
@@ -969,12 +986,12 @@ def train_one_epoch(
     transformer.train()
     vae.eval()  # Ensure VAE is in eval mode
     
-    # Enable gradient checkpointing for memory efficiency
+    # Enable gradient checkpointing for transformer
     if hasattr(transformer, "enable_gradient_checkpointing"):
         transformer.enable_gradient_checkpointing()
-    elif hasattr(transformer, "gradient_checkpointing"):
-        transformer.gradient_checkpointing = True
-    
+        if hasattr(transformer, 'set_use_memory_efficient_attention_xformers'):
+            transformer.set_use_memory_efficient_attention_xformers(True)
+
     # Enable memory efficient attention if available
     if hasattr(transformer, "set_use_memory_efficient_attention_xformers"):
         transformer.set_use_memory_efficient_attention_xformers(True)
@@ -1110,7 +1127,7 @@ def main(args):
         torch_dtype=torch.float16 if args.mixed_precision == "fp16" else torch.bfloat16,
     )
 
-    # Create training pipeline
+    # Create pipeline
     pipeline = CogVideoXInpaintingPipeline(
         vae=vae,
         transformer=transformer,
@@ -1118,6 +1135,32 @@ def main(args):
         device=accelerator.device,
         dtype=torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16 if args.mixed_precision == "fp16" else torch.float32
     )
+
+    # Enable memory optimizations
+    if args.enable_slicing:
+        vae.enable_slicing()
+    if args.enable_tiling:
+        vae.enable_tiling()
+
+    # Freeze VAE and put in eval mode
+    vae.requires_grad_(False)
+    vae.eval()
+
+    # Enable gradient checkpointing for transformer
+    if args.gradient_checkpointing:
+        transformer.enable_gradient_checkpointing()
+        if hasattr(transformer, 'set_use_memory_efficient_attention_xformers'):
+            transformer.set_use_memory_efficient_attention_xformers(True)
+
+    # Move models to device and set dtype
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
+
+    transformer.to(accelerator.device, dtype=weight_dtype)
+    vae.to(accelerator.device, dtype=weight_dtype)
 
     # Create optimizer
     optimizer = torch.optim.AdamW(
