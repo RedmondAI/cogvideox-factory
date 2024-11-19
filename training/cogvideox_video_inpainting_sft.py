@@ -585,7 +585,16 @@ class CogVideoXInpaintingPipeline:
             gt_latents = gt_latents * self.vae.config.scaling_factor
 
             # Downsample masks to match latent resolution
-            masks = F.interpolate(masks, size=clean_latents.shape[-2:], mode="nearest")
+            # First permute to match expected format [B, C, T, H, W]
+            masks = masks.permute(0, 1, 2, 3, 4)
+            # Interpolate spatial dimensions only
+            masks = F.interpolate(
+                masks.reshape(-1, 1, *masks.shape[-2:]),  # Combine batch and time dims
+                size=clean_latents.shape[-2:],
+                mode="nearest"
+            )
+            # Restore original shape
+            masks = masks.reshape(clean_latents.shape[0], 1, clean_latents.shape[2], *clean_latents.shape[-2:])
 
         # Add noise to latents
         noise = torch.randn_like(clean_latents)
