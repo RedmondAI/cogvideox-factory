@@ -496,13 +496,14 @@ class CogVideoXInpaintingPipeline:
                 latent_model_input = torch.cat([latent_model_input] * 2)
             
             # Predict noise residual
-            noise_pred = self.transformer(
+            model_output = self.transformer(
                 latent_model_input,
                 t,
                 encoder_hidden_states=torch.zeros((latent_model_input.shape[0], 1, 4096), device=device, dtype=self.weight_dtype),
                 image_rotary_emb=None,
                 return_dict=False,
-            )[0]
+            )
+            noise_pred = model_output[0]
             
             # Perform guidance
             if do_classifier_free_guidance:
@@ -616,13 +617,14 @@ class CogVideoXInpaintingPipeline:
         ) if self.transformer.config.use_rotary_positional_embeddings else None
 
         # Get model prediction without text conditioning
-        noise_pred = self.transformer(
+        model_output = self.transformer(
             hidden_states=noisy_frames,
             timestep=timesteps.to(dtype=self.weight_dtype),
             encoder_hidden_states=torch.zeros((noisy_frames.shape[0], 1, 4096), device=self.device, dtype=self.weight_dtype),
             image_rotary_emb=image_rotary_emb,
             return_dict=False,
-        )[0]
+        )
+        noise_pred = model_output[0]
 
         # Convert predictions back to [B, C, T, H, W] format
         noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
@@ -862,12 +864,13 @@ def train_loop(
                     else None
                 )
                 
-                noise_pred = model(
+                model_output = model(
                     hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
                     timestep=timesteps.to(dtype=model_dtype),
                     encoder_hidden_states=torch.zeros((noisy_frames.shape[0], 1, 4096), device=noisy_frames.device, dtype=model_dtype),
                     image_rotary_emb=image_rotary_emb,
-                ).sample
+                )
+                noise_pred = model_output[0]
                 
                 # Verify shape consistency
                 assert noise_pred.shape == noisy_frames.shape, \
@@ -943,12 +946,13 @@ def train_loop(
                                 else None
                             )
                             
-                            noise_pred = model(
+                            model_output = model(
                                 hidden_states=noisy_frames,
                                 timestep=timesteps,
                                 encoder_hidden_states=torch.zeros((noisy_frames.shape[0], 1, 4096), device=noisy_frames.device, dtype=model_dtype),
                                 image_rotary_emb=image_rotary_emb,
-                            ).sample
+                            )
+                            noise_pred = model_output[0]
                             val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
                     
                     val_loss /= len(val_dataloader)
@@ -1065,13 +1069,14 @@ def train_one_epoch(
                     else None
                 )
                 
-                noise_pred = transformer(
+                model_output = transformer(
                     noisy_latents,
                     timesteps,
                     encoder_hidden_states=torch.zeros((noisy_latents.shape[0], 1, 4096), device=noisy_latents.device, dtype=noisy_latents.dtype),
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,
-                )[0]
+                )
+                noise_pred = model_output[0]
                 
                 # Compute loss
                 loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
