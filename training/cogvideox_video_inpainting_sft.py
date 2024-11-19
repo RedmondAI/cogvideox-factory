@@ -104,12 +104,12 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         super().__init__(vae, transformer, scheduler)
         
         # Set processing parameters
-        self.chunk_size = getattr(args, 'chunk_size', 64) if args else 64
-        self.overlap = getattr(args, 'overlap', 8) if args else 8
-        self.max_resolution = getattr(args, 'max_resolution', 640) if args else 640
+        self.chunk_size = getattr(args, 'chunk_size', 32) if args else 32
+        self.overlap = getattr(args, 'overlap', 4) if args else 4
+        self.max_resolution = getattr(args, 'max_resolution', 512) if args else 512
         
         # Set memory optimization
-        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,garbage_collection_threshold:0.8,expandable_segments:True"
         
         # Store model references
         self.transformer = transformer
@@ -119,15 +119,19 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         if hasattr(self.transformer, 'gradient_checkpointing'):
             self.transformer.gradient_checkpointing = True
         
-        # Enable CPU offloading for VAE if needed
-        self.vae_device = self.vae.device
-        self.chunk_size = 64  # Default spatial chunk size
-        self.overlap = 8  # Default overlap size
-        self.max_resolution = 640  # Maximum resolution before chunking
-        
-        # Configure memory efficient attention
+        # Enable memory efficient attention
         if hasattr(self.transformer, 'set_use_memory_efficient_attention_xformers'):
             self.transformer.set_use_memory_efficient_attention_xformers(True)
+        
+        # Enable VAE optimizations
+        if hasattr(self.vae, 'enable_slicing'):
+            self.vae.enable_slicing()
+        if hasattr(self.vae, 'enable_tiling'):
+            self.vae.enable_tiling()
+        
+        # Configure precision based on model type
+        model_name = getattr(transformer.config, "_name_or_path", "").lower()
+        self.dtype = torch.bfloat16 if "5b" in model_name else torch.float16
     
     @property
     def transformer_config(self):
@@ -288,7 +292,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
     
     @torch.no_grad()
     def encode(self, x: torch.Tensor, chunk_size: Optional[int] = None, overlap: Optional[int] = None) -> torch.Tensor:
-        """Encode video to latent space with temporal compression."""
+        """Encode video to latent space with temporal compression and memory optimizations."""
         try:
             # Get dimensions and calculate temporal compression
             B, C, T, H, W = x.shape
@@ -302,6 +306,12 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             num_temporal_chunks = (T + temporal_chunk_size - 1) // temporal_chunk_size
             temporal_latents = []
             
+            # Enable memory optimizations
+            if hasattr(self.vae, 'enable_slicing'):
+                self.vae.enable_slicing()
+            if hasattr(self.vae, 'enable_tiling'):
+                self.vae.enable_tiling()
+            
             # Move VAE to CPU temporarily if needed
             vae_device = self.vae.device
             if torch.cuda.memory_allocated() > 0.8 * torch.cuda.get_device_properties(0).total_memory:
@@ -314,95 +324,106 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 x_chunk = x[:, :, t_start:t_end]
                 
                 # Process spatial chunks if input is large
-                if W > self.max_resolution:
+                if H * W > self.max_resolution * self.max_resolution:
                     effective_chunk = chunk_size - 2 * overlap
-                    num_chunks = math.ceil(W / effective_chunk)
+                    num_chunks_h = math.ceil(H / effective_chunk)
+                    num_chunks_w = math.ceil(W / effective_chunk)
                     spatial_chunks = []
                     
-                    for chunk_idx in range(num_chunks):
-                        start_idx = chunk_idx * effective_chunk
-                        end_idx = min(start_idx + chunk_size, W)
-                        start_idx = max(0, end_idx - chunk_size)
+                    for h_idx in range(num_chunks_h):
+                        h_start = h_idx * effective_chunk
+                        h_end = min(h_start + chunk_size, H)
+                        h_start = max(0, h_end - chunk_size)
                         
-                        # Extract chunk and move to CPU if needed
-                        chunk = x_chunk[..., start_idx:end_idx]
-                        if self.vae.device == torch.device('cpu'):
-                            chunk = chunk.cpu()
-                        
-                        # Clear cache before encoding
-                        if torch.cuda.is_available():
+                        for w_idx in range(num_chunks_w):
+                            w_start = w_idx * effective_chunk
+                            w_end = min(w_start + chunk_size, W)
+                            w_start = max(0, w_end - chunk_size)
+                            
+                            # Extract chunk and move to CPU if needed
+                            chunk = x_chunk[..., h_start:h_end, w_start:w_end]
+                            if self.vae.device == torch.device('cpu'):
+                                chunk = chunk.cpu()
+                            
+                            # Clear cache before encoding
                             torch.cuda.empty_cache()
-                        
-                        # Encode chunk with gradient checkpointing
-                        with torch.amp.autocast(device_type='cuda', enabled=True, dtype=torch.bfloat16):
-                            with torch.no_grad():
-                                chunk_latents = self.vae.encode(chunk).latent_dist.sample()
-                                chunk_latents = chunk_latents * self.vae.config.scaling_factor
-                        
-                        # Move back to original device
-                        if self.vae.device == torch.device('cpu'):
-                            chunk_latents = chunk_latents.to(vae_device)
-                        
-                        # Remove overlap if not first or last chunk
-                        if chunk_idx > 0:
-                            chunk_latents = chunk_latents[..., overlap//8:]
-                        if chunk_idx < num_chunks - 1:
-                            chunk_latents = chunk_latents[..., :-(overlap//8)]
-                        
-                        spatial_chunks.append(chunk_latents)
-                        
-                        # Clear chunk from memory
-                        del chunk
-                        torch.cuda.empty_cache()
+                            
+                            # Encode chunk with mixed precision
+                            with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                                with torch.no_grad():
+                                    chunk_latents = self.vae.encode(chunk).latent_dist.sample()
+                                    chunk_latents = chunk_latents * self.vae.config.scaling_factor
+                            
+                            # Move back to original device
+                            if self.vae.device == torch.device('cpu'):
+                                chunk_latents = chunk_latents.to(vae_device)
+                            
+                            # Remove overlap if not first or last chunk
+                            if h_idx > 0:
+                                chunk_latents = chunk_latents[..., overlap//8:, :]
+                            if h_idx < num_chunks_h - 1:
+                                chunk_latents = chunk_latents[..., :-(overlap//8), :]
+                            if w_idx > 0:
+                                chunk_latents = chunk_latents[..., overlap//8:]
+                            if w_idx < num_chunks_w - 1:
+                                chunk_latents = chunk_latents[..., :-(overlap//8)]
+                            
+                            spatial_chunks.append(chunk_latents)
+                            
+                            # Clear chunk from memory
+                            del chunk, chunk_latents
+                            torch.cuda.empty_cache()
                     
-                    # Concatenate spatial chunks
-                    chunk_latents = torch.cat(spatial_chunks, dim=-1)
-                    del spatial_chunks
+                    # Reconstruct from spatial chunks
+                    rows = []
+                    chunks_per_row = num_chunks_w
+                    for i in range(0, len(spatial_chunks), chunks_per_row):
+                        row = torch.cat(spatial_chunks[i:i + chunks_per_row], dim=-1)
+                        rows.append(row)
+                    chunk_latents = torch.cat(rows, dim=-2)
+                    
+                    del spatial_chunks, rows
                     torch.cuda.empty_cache()
                 else:
                     # Encode whole temporal chunk
                     if self.vae.device == torch.device('cpu'):
                         x_chunk = x_chunk.cpu()
                     
-                    with torch.amp.autocast(device_type='cuda', enabled=True, dtype=torch.bfloat16):
+                    with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
                         with torch.no_grad():
                             chunk_latents = self.vae.encode(x_chunk).latent_dist.sample()
                             chunk_latents = chunk_latents * self.vae.config.scaling_factor
                     
                     if self.vae.device == torch.device('cpu'):
                         chunk_latents = chunk_latents.to(vae_device)
-                
-                # Handle temporal compression
-                target_frames = (t_end - t_start) // temporal_ratio
-                if chunk_latents.shape[2] > target_frames:
-                    start_idx = (chunk_latents.shape[2] - target_frames) // 2
-                    chunk_latents = chunk_latents[:, :, start_idx:start_idx + target_frames]
-                
-                temporal_latents.append(chunk_latents)
-                
-                # Clear chunk from memory
-                del chunk_latents
-                torch.cuda.empty_cache()
             
-            # Move VAE back to original device
-            if self.vae.device == torch.device('cpu'):
-                self.vae = self.vae.to(vae_device)
+            # Handle temporal compression
+            target_frames = (t_end - t_start) // temporal_ratio
+            if chunk_latents.shape[2] > target_frames:
+                start_idx = (chunk_latents.shape[2] - target_frames) // 2
+                chunk_latents = chunk_latents[:, :, start_idx:start_idx + target_frames]
             
-            # Concatenate temporal chunks
-            latents = torch.cat(temporal_latents, dim=2)
-            del temporal_latents
+            temporal_latents.append(chunk_latents)
+            
+            # Clear chunk from memory
+            del chunk_latents, x_chunk
             torch.cuda.empty_cache()
-            
-            # Verify final temporal dimension
-            if latents.shape[2] != expected_temporal_frames:
-                raise ValueError(f"Expected {expected_temporal_frames} frames after compression, got {latents.shape[2]}")
-            
-            return latents
-            
-        except Exception as e:
-            logger.error(f"Error in encode: {str(e)}")
-            logger.error(f"Stack trace: {traceback.format_exc()}")
-            raise
+        
+        # Move VAE back to original device
+        if self.vae.device == torch.device('cpu'):
+            self.vae = self.vae.to(vae_device)
+        
+        # Concatenate temporal chunks
+        latents = torch.cat(temporal_latents, dim=2)
+        del temporal_latents
+        torch.cuda.empty_cache()
+        
+        return latents
+    
+    except Exception as e:
+        print(f"Error in encode: {str(e)}")
+        traceback.print_exc()
+        raise e
     
     @torch.no_grad()
     def decode(self, latents: torch.Tensor) -> torch.Tensor:

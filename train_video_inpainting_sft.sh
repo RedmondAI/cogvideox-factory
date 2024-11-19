@@ -6,12 +6,12 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # Model configuration
 PRETRAINED_MODEL_NAME_OR_PATH="THUDM/CogVideoX-5b"
 OUTPUT_DIR="./cogvideox-inpainting"
-DATA_ROOT="/var/lib/docker/dataset"  # Updated to correct dataset path
+DATA_ROOT="/var/lib/docker/dataset"
 
 # Training hyperparameters
-TRAIN_BATCH_SIZE=2  # Reduced batch size for memory efficiency
-GRADIENT_ACCUMULATION_STEPS=16  # Increased to maintain effective batch size of 32
-MAX_NUM_FRAMES=49  # Set to match model's native frame count
+TRAIN_BATCH_SIZE=1  # Reduced batch size for memory efficiency
+GRADIENT_ACCUMULATION_STEPS=32  # Increased to maintain effective batch size
+MAX_NUM_FRAMES=32  # Reduced from 49 for memory efficiency
 NUM_TRAIN_EPOCHS=100
 LEARNING_RATE=1e-5
 LR_WARMUP_STEPS=1000
@@ -28,11 +28,11 @@ IMAGE_SIZE=480
 MIXED_PRECISION="bf16"  # Using bfloat16 for better numerical stability
 RANDOM_FLIP_H=0.5
 RANDOM_FLIP_V=0.5
-WINDOW_SIZE=32
-OVERLAP=8
-CHUNK_SIZE=32  # Reduced for better memory efficiency
-VAE_PRECISION="bf16"  # Changed to match mixed precision setting
-NUM_WORKERS=4  # Reduced for better memory management
+WINDOW_SIZE=16  # Reduced from 32
+OVERLAP=4  # Reduced from 8
+CHUNK_SIZE=32  # Reduced from 64
+VAE_PRECISION="bf16"
+NUM_WORKERS=2  # Reduced for better memory management
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -83,7 +83,7 @@ done
 # Create output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
 
-# Launch training with proper argument format
+# Run training with memory optimizations
 deepspeed training/cogvideox_video_inpainting_sft.py \
     --pretrained_model_name_or_path $PRETRAINED_MODEL_NAME_OR_PATH \
     --output_dir $OUTPUT_DIR \

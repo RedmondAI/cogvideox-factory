@@ -6,18 +6,31 @@
         "stage": 3,
         "overlap_comm": true,
         "contiguous_gradients": true,
-        "reduce_bucket_size": 5e7,
-        "stage3_prefetch_bucket_size": 5e7,
-        "stage3_param_persistence_threshold": 1e5,
-        "stage3_max_live_parameters": 1e9,
-        "stage3_max_reuse_distance": 1e9,
+        "reduce_bucket_size": 2e7,
+        "stage3_prefetch_bucket_size": 2e7,
+        "stage3_param_persistence_threshold": 1e4,
+        "stage3_max_live_parameters": 1e8,
+        "stage3_max_reuse_distance": 1e8,
         "memory_efficient_linear": true
     },
     "gradient_clipping": 1.0,
-    "train_batch_size": 32,  # Total batch size across all GPUs (4 per GPU * 8 GPUs)
-    "train_micro_batch_size_per_gpu": 4,  # Matches shell script TRAIN_BATCH_SIZE
+    "train_batch_size": 32,  
+    "train_micro_batch_size_per_gpu": 1,  
     "wall_clock_breakdown": false,
     "flops_profiler": {
         "enabled": false
+    },
+    "activation_checkpointing": {
+        "partition_activations": true,
+        "cpu_checkpointing": true,
+        "contiguous_memory_optimization": true,
+        "number_checkpoints": 2
+    },
+    "aio": {
+        "block_size": 1048576,
+        "queue_depth": 8,
+        "thread_count": 1,
+        "single_submit": false,
+        "overlap_events": true
     }
 }
