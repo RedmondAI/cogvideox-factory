@@ -291,139 +291,50 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             raise
     
     @torch.no_grad()
-    def encode(self, x: torch.Tensor, chunk_size: Optional[int] = None, overlap: Optional[int] = None) -> torch.Tensor:
-        """Encode video to latent space with temporal compression and memory optimizations."""
+    def encode(self, frames, return_dict=True):
+        """
+        Encode input frames to latent space without text conditioning.
+        
+        Args:
+            frames: Input video frames tensor [B, C, T, H, W]
+            return_dict: Whether to return a dictionary
+            
+        Returns:
+            Encoded latent representation
+        """
+        batch_size = frames.shape[0]
+        
         try:
-            # Get dimensions and calculate temporal compression
-            B, C, T, H, W = x.shape
-            temporal_ratio = self.transformer.config.temporal_compression_ratio
-            expected_temporal_frames = T // temporal_ratio
-            chunk_size = chunk_size or self.chunk_size
-            overlap = overlap or self.overlap
-            
-            # Process in smaller temporal chunks to save memory
-            temporal_chunk_size = min(8, T)  # Process 8 frames at a time
-            num_temporal_chunks = (T + temporal_chunk_size - 1) // temporal_chunk_size
-            temporal_latents = []
-            
-            # Enable memory optimizations
-            if hasattr(self.vae, 'enable_slicing'):
-                self.vae.enable_slicing()
-            if hasattr(self.vae, 'enable_tiling'):
-                self.vae.enable_tiling()
-            
-            # Move VAE to CPU temporarily if needed
-            vae_device = self.vae.device
-            if torch.cuda.memory_allocated() > 0.8 * torch.cuda.get_device_properties(0).total_memory:
-                self.vae = self.vae.cpu()
-                torch.cuda.empty_cache()
-            
-            for t_idx in range(num_temporal_chunks):
-                t_start = t_idx * temporal_chunk_size
-                t_end = min(t_start + temporal_chunk_size, T)
-                x_chunk = x[:, :, t_start:t_end]
+            # Process frames in temporal chunks for memory efficiency
+            latents = []
+            for chunk_start in range(0, frames.shape[2], self.chunk_size):
+                chunk_end = min(chunk_start + self.chunk_size, frames.shape[2])
+                chunk = frames[:, :, chunk_start:chunk_end]
                 
-                # Process spatial chunks if input is large
-                if H * W > self.max_resolution * self.max_resolution:
-                    effective_chunk = chunk_size - 2 * overlap
-                    num_chunks_h = math.ceil(H / effective_chunk)
-                    num_chunks_w = math.ceil(W / effective_chunk)
-                    spatial_chunks = []
+                # Encode chunk
+                with torch.no_grad():
+                    latent_dist = self.vae.encode(chunk)
+                    if isinstance(latent_dist, DiagonalGaussianDistribution):
+                        chunk_latents = latent_dist.sample()
+                    else:
+                        chunk_latents = latent_dist
                     
-                    for h_idx in range(num_chunks_h):
-                        h_start = h_idx * effective_chunk
-                        h_end = min(h_start + chunk_size, H)
-                        h_start = max(0, h_end - chunk_size)
-                        
-                        for w_idx in range(num_chunks_w):
-                            w_start = w_idx * effective_chunk
-                            w_end = min(w_start + chunk_size, W)
-                            w_start = max(0, w_end - chunk_size)
-                            
-                            # Extract chunk and move to CPU if needed
-                            chunk = x_chunk[..., h_start:h_end, w_start:w_end]
-                            if self.vae.device == torch.device('cpu'):
-                                chunk = chunk.cpu()
-                            
-                            # Clear cache before encoding
-                            torch.cuda.empty_cache()
-                            
-                            # Encode chunk with mixed precision
-                            with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
-                                with torch.no_grad():
-                                    chunk_latents = self.vae.encode(chunk).latent_dist.sample()
-                                    chunk_latents = chunk_latents * self.vae.config.scaling_factor
-                            
-                            # Move back to original device
-                            if self.vae.device == torch.device('cpu'):
-                                chunk_latents = chunk_latents.to(vae_device)
-                            
-                            # Remove overlap if not first or last chunk
-                            if h_idx > 0:
-                                chunk_latents = chunk_latents[..., overlap//8:, :]
-                            if h_idx < num_chunks_h - 1:
-                                chunk_latents = chunk_latents[..., :-(overlap//8), :]
-                            if w_idx > 0:
-                                chunk_latents = chunk_latents[..., overlap//8:]
-                            if w_idx < num_chunks_w - 1:
-                                chunk_latents = chunk_latents[..., :-(overlap//8)]
-                            
-                            spatial_chunks.append(chunk_latents)
-                            
-                            # Clear chunk from memory
-                            del chunk, chunk_latents
-                            torch.cuda.empty_cache()
-                    
-                    # Reconstruct from spatial chunks
-                    rows = []
-                    chunks_per_row = num_chunks_w
-                    for i in range(0, len(spatial_chunks), chunks_per_row):
-                        row = torch.cat(spatial_chunks[i:i + chunks_per_row], dim=-1)
-                        rows.append(row)
-                    chunk_latents = torch.cat(rows, dim=-2)
-                    
-                    del spatial_chunks, rows
-                    torch.cuda.empty_cache()
-                else:
-                    # Encode whole temporal chunk
-                    if self.vae.device == torch.device('cpu'):
-                        x_chunk = x_chunk.cpu()
-                    
-                    with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
-                        with torch.no_grad():
-                            chunk_latents = self.vae.encode(x_chunk).latent_dist.sample()
-                            chunk_latents = chunk_latents * self.vae.config.scaling_factor
-                    
-                    if self.vae.device == torch.device('cpu'):
-                        chunk_latents = chunk_latents.to(vae_device)
-                
-                # Handle temporal compression
-                target_frames = (t_end - t_start) // temporal_ratio
-                if chunk_latents.shape[2] > target_frames:
-                    start_idx = (chunk_latents.shape[2] - target_frames) // 2
-                    chunk_latents = chunk_latents[:, :, start_idx:start_idx + target_frames]
-                
-                temporal_latents.append(chunk_latents)
-                
-                # Clear chunk from memory
-                del chunk_latents, x_chunk
-                torch.cuda.empty_cache()
+                latents.append(chunk_latents)
             
-            # Move VAE back to original device
-            if self.vae.device == torch.device('cpu'):
-                self.vae = self.vae.to(vae_device)
+            # Concatenate chunks
+            latents = torch.cat(latents, dim=2)
             
-            # Concatenate temporal chunks
-            latents = torch.cat(temporal_latents, dim=2)
-            del temporal_latents
-            torch.cuda.empty_cache()
+            # Scale latents
+            latents = latents * self.vae.config.scaling_factor
             
+            if return_dict:
+                return {"latents": latents}
             return latents
             
         except Exception as e:
-            logger.error(f"Error in encode: {str(e)}")
-            logger.error(f"Stack trace: {traceback.format_exc()}")
-            raise e
+            logger.error(f"Error in encode method: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
     
     @torch.no_grad()
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
@@ -524,96 +435,88 @@ class CogVideoXInpaintingPipeline(BasePipeline):
     @torch.no_grad()
     def __call__(
         self,
-        prompt: Union[str, List[str]],
-        video: torch.Tensor,
-        mask: torch.Tensor,
-        num_inference_steps: int = 50,
-        generator: Optional[torch.Generator] = None,
-        eta: float = 0.0,
-        **kwargs,
+        frames,
+        mask,
+        generator=None,
+        num_inference_steps=50,
+        eta=0.0,
+        guidance_scale=1.0,
+        output_type="pil",
+        return_dict=True,
     ):
-        """Run inpainting pipeline.
+        """
+        Perform inpainting on video frames.
         
         Args:
-            prompt: Unused for inpainting
-            video: Input video [B, C, T, H, W]
-            mask: Binary mask [B, 1, T, H, W]
-            num_inference_steps: Number of denoising steps
+            frames: Input video frames tensor [B, C, T, H, W]
+            mask: Binary mask tensor [B, 1, T, H, W]
             generator: Random number generator
-            eta: Eta parameter for variance during sampling
+            num_inference_steps: Number of denoising steps
+            eta: Weight for noise in each step
+            guidance_scale: Scale for classifier-free guidance
+            output_type: Output format ('pil' or 'pt')
+            return_dict: Whether to return a dictionary
             
         Returns:
-            Generated video completing the masked regions
+            Generated inpainted video frames
         """
-        batch_size = video.shape[0]
+        # Initialize
+        device = self.device
+        do_classifier_free_guidance = guidance_scale > 1.0
         
-        # Validate inputs and calculate scaling
-        spatial_scale, temporal_scale = self.validate_dimensions(video, mask)
+        # Prepare latent variables
+        latents = self.encode(frames)["latents"]
         
         # Set timesteps
         self.scheduler.set_timesteps(num_inference_steps)
         timesteps = self.scheduler.timesteps
         
-        # Prepare inputs
-        latents = self.encode(video)
-        mask = self.prepare_mask(mask)
-        encoder_hidden_states = self.prepare_encoder_hidden_states(batch_size, video.device, video.dtype)
+        # Add noise to latents
+        noise = torch.randn(latents.shape, generator=generator, device=device)
+        latents = self.scheduler.add_noise(latents, noise, timesteps[0])
         
-        # Initialize noise
-        noise = torch.randn_like(latents)
-        noisy_latents = self.scheduler.add_noise(latents, noise, timesteps[0])
+        # Prepare extra step kwargs
+        extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
         
-        # Prepare for transformer
-        latent_model_input = noisy_latents.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
-        
-        # Get image rotary embeddings
-        image_rotary_emb = (
-            prepare_rotary_positional_embeddings(
-                height=video_latents.shape[3] * 8,  # Scale back to pixel space
-                width=video_latents.shape[4] * 8,
-                num_frames=video_latents.shape[2],
-                vae_scale_factor_spatial=8,  # VAE spatial scaling factor
-                patch_size=self.transformer.config.patch_size,
-                attention_head_dim=self.transformer.config.attention_head_dim,
-                device=video.device,
-            )
-            if self.transformer.config.use_rotary_positional_embeddings
-            else None
-        )
-        
-        # Denoise
-        for i, t in enumerate(timesteps[:-1]):
-            t_back = timesteps[i + 1]
+        # Denoising loop
+        for i, t in enumerate(timesteps):
+            # Expand latents for guidance
+            latent_model_input = latents
+            if do_classifier_free_guidance:
+                latent_model_input = torch.cat([latent_model_input] * 2)
             
-            # Predict noise
+            # Predict noise residual
             noise_pred = self.transformer(
-                hidden_states=latent_model_input,
-                timestep=t,
-                encoder_hidden_states=encoder_hidden_states,
-                image_rotary_emb=image_rotary_emb,
-                return_dict=False,
-            )[0]
+                latent_model_input,
+                t,
+                encoder_hidden_states=None,  # No text conditioning
+            )
             
-            # Scheduler step
-            latent_output = self.scheduler.step(
-                model_output=noise_pred,
-                timestep=t,
-                timestep_back=t_back,
-                sample=latent_model_input,
-                old_pred_original_sample=latents.permute(0, 2, 1, 3, 4),
-            )[0]
+            # Perform guidance
+            if do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            
+            # Compute previous noisy sample
+            latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
             
             # Apply mask
-            latent_model_input = (
-                latent_output * mask + latent_model_input * (1 - mask)
-            )
+            if mask is not None:
+                init_latents = self.encode(frames)["latents"]
+                latents = (1 - mask) * init_latents + mask * latents
         
-        # Final decoding
-        latent_model_input = latent_model_input.permute(0, 2, 1, 3, 4)  # [B, C, T, H, W]
-        video = self.decode(latent_model_input)
+        # Decode latents
+        video_frames = self.decode(latents)
         
-        return video
-
+        # Convert to output format
+        if output_type == "pil":
+            video_frames = self.numpy_to_pil(video_frames)
+        
+        if not return_dict:
+            return video_frames
+        
+        return {"videos": video_frames}
+    
     def check_boundary_continuity(self, video: torch.Tensor, boundary: int, window_size: int) -> Tuple[float, float]:
         """Check continuity at a chunk boundary.
         
@@ -735,7 +638,7 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             
             # Predict noise residual
             noise_pred = self.transformer(
-                hidden_states=noisy_latents,
+                hidden_states=noisy_latents,  # Already in [B, T, C, H, W] format
                 timestep=timesteps,
                 encoder_hidden_states=encoder_hidden_states,
                 image_rotary_emb=image_rotary_emb,

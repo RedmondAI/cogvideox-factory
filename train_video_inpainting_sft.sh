@@ -101,20 +101,14 @@ deepspeed training/cogvideox_video_inpainting_sft.py \
     --checkpointing_steps $CHECKPOINTING_STEPS \
     --validation_steps $VALIDATION_STEPS \
     --mixed_precision $MIXED_PRECISION \
-    --enable_xformers_memory_efficient_attention \
-    --random_flip_h $RANDOM_FLIP_H \
-    --random_flip_v $RANDOM_FLIP_V \
+    --vae_precision $VAE_PRECISION \
     --window_size $WINDOW_SIZE \
     --overlap $OVERLAP \
     --chunk_size $CHUNK_SIZE \
-    --use_8bit_adam \
-    --use_flash_attention \
-    --gradient_checkpointing \
-    --vae_precision $VAE_PRECISION \
-    --enable_model_cpu_offload \
-    --enable_slicing \
-    --enable_tiling \
-    --allow_tf32 \
-    --report_to wandb \
-    --dataloader_num_workers $NUM_WORKERS \
-    --deepspeed_config configs/zero3.json
+    --random_flip_h $RANDOM_FLIP_H \
+    --random_flip_v $RANDOM_FLIP_V \
+    --num_workers $NUM_WORKERS \
+    --disable_text_conditioning \
+    --zero_text_embeddings \
+    --deepspeed_config configs/deepspeed/ds_config_zero3.json \
+    "$@"
