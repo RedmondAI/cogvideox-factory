@@ -502,6 +502,7 @@ class CogVideoXInpaintingPipeline:
                 encoder_hidden_states=None,  # No text conditioning for inpainting
                 image_rotary_emb=None,
                 return_dict=False,
+                cross_attention_kwargs={"use_cross_attention": False}  # Disable cross-attention
             )
             noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
             
@@ -629,6 +630,7 @@ class CogVideoXInpaintingPipeline:
             encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
             image_rotary_emb=image_rotary_emb,
             return_dict=False,
+            cross_attention_kwargs={"use_cross_attention": False}  # Disable cross-attention
         )
         noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
 
@@ -881,6 +883,8 @@ def train_loop(
                     timestep=timesteps.to(dtype=model_dtype),
                     encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                     image_rotary_emb=image_rotary_emb,
+                    return_dict=False,
+                    cross_attention_kwargs={"use_cross_attention": False}  # Disable cross-attention
                 )
                 noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
                 
@@ -969,6 +973,8 @@ def train_loop(
                                 timestep=timesteps,
                                 encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                                 image_rotary_emb=image_rotary_emb,
+                                return_dict=False,
+                                cross_attention_kwargs={"use_cross_attention": False}  # Disable cross-attention
                             )
                             noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
                             val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
@@ -1099,6 +1105,7 @@ def train_one_epoch(
                     encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,
+                    cross_attention_kwargs={"use_cross_attention": False}  # Disable cross-attention
                 )
                 noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
                 
