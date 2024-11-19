@@ -499,11 +499,7 @@ class CogVideoXInpaintingPipeline:
             noise_pred = self.transformer(
                 latent_model_input,
                 t,
-                encoder_hidden_states=self.prepare_encoder_hidden_states(
-                    batch_size=latent_model_input.shape[0],
-                    device=self.device,
-                    dtype=self.weight_dtype
-                ),  # Use zero tensor for no text conditioning
+                encoder_hidden_states=torch.zeros((latent_model_input.shape[0], 1, 4096), device=device, dtype=self.weight_dtype),
                 image_rotary_emb=None,
                 return_dict=False,
             )[0]
@@ -623,11 +619,7 @@ class CogVideoXInpaintingPipeline:
         noise_pred = self.transformer(
             hidden_states=noisy_frames,
             timestep=timesteps.to(dtype=self.weight_dtype),
-            encoder_hidden_states=self.prepare_encoder_hidden_states(
-                batch_size=noisy_frames.shape[0],
-                device=self.device,
-                dtype=self.weight_dtype
-            ),  # Use zero tensor for no text conditioning
+            encoder_hidden_states=torch.zeros((noisy_frames.shape[0], 1, 4096), device=self.device, dtype=self.weight_dtype),
             image_rotary_emb=image_rotary_emb,
             return_dict=False,
         )[0]
@@ -873,7 +865,7 @@ def train_loop(
                 noise_pred = model(
                     hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
                     timestep=timesteps.to(dtype=model_dtype),
-                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_hidden_states=torch.zeros((noisy_frames.shape[0], 1, 4096), device=noisy_frames.device, dtype=model_dtype),
                     image_rotary_emb=image_rotary_emb,
                 ).sample
                 
@@ -954,7 +946,7 @@ def train_loop(
                             noise_pred = model(
                                 hidden_states=noisy_frames,
                                 timestep=timesteps,
-                                encoder_hidden_states=None if model.ignore_text_encoder else None,  # No text conditioning during training
+                                encoder_hidden_states=torch.zeros((noisy_frames.shape[0], 1, 4096), device=noisy_frames.device, dtype=model_dtype),
                                 image_rotary_emb=image_rotary_emb,
                             ).sample
                             val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
@@ -1076,7 +1068,7 @@ def train_one_epoch(
                 noise_pred = transformer(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=batch["prompt_embeds"],
+                    encoder_hidden_states=torch.zeros((noisy_latents.shape[0], 1, 4096), device=noisy_latents.device, dtype=noisy_latents.dtype),
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,
                 )[0]
