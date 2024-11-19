@@ -499,7 +499,7 @@ class CogVideoXInpaintingPipeline:
             model_output = self.transformer(
                 hidden_states=latent_model_input,
                 timestep=t,
-                encoder_hidden_states=None,  # Set to None for inpainting
+                encoder_hidden_states=torch.zeros((latent_model_input.shape[0], 1, self.transformer.config.text_embed_dim), device=device, dtype=self.weight_dtype),  # Use zero tensor instead of None
                 image_rotary_emb=None,
                 return_dict=True
             )
@@ -626,7 +626,7 @@ class CogVideoXInpaintingPipeline:
         model_output = self.transformer(
             hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
             timestep=timesteps.to(dtype=self.weight_dtype),
-            encoder_hidden_states=None,  # Set to None for inpainting
+            encoder_hidden_states=torch.zeros((batch_size, 1, self.transformer.config.text_embed_dim), device=device, dtype=dtype),  # Use zero tensor instead of None
             image_rotary_emb=image_rotary_emb,
             return_dict=True
         )
@@ -1098,7 +1098,7 @@ def train_one_epoch(
                 model_output = transformer(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=None,  # Set to None for inpainting
+                    encoder_hidden_states=torch.zeros((batch_size, 1, transformer.config.text_embed_dim), device=device, dtype=dtype),  # Use zero tensor instead of None
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
                 )
