@@ -616,11 +616,17 @@ class CogVideoXInpaintingPipeline:
             device=self.device,
         ) if self.transformer.config.use_rotary_positional_embeddings else None
 
+        # Create dummy text embeddings for the patch embedding layer
+        batch_size = noisy_latents.shape[0]
+        device = noisy_latents.device
+        dtype = noisy_latents.dtype
+        dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=device, dtype=dtype)
+
         # Get model prediction without text conditioning
         model_output = self.transformer(
-            hidden_states=noisy_frames,
+            hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
             timestep=timesteps.to(dtype=self.weight_dtype),
-            encoder_hidden_states=None,  # No text conditioning for inpainting
+            encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
             image_rotary_emb=image_rotary_emb,
             return_dict=False,
         )
@@ -864,10 +870,16 @@ def train_loop(
                     else None
                 )
                 
+                # Create dummy text embeddings for the patch embedding layer
+                batch_size = noisy_frames.shape[0]
+                device = noisy_frames.device
+                dtype = noisy_frames.dtype
+                dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=device, dtype=dtype)
+                
                 model_output = model(
                     hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
                     timestep=timesteps.to(dtype=model_dtype),
-                    encoder_hidden_states=None,  # No text conditioning for inpainting
+                    encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                     image_rotary_emb=image_rotary_emb,
                 )
                 noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
@@ -946,10 +958,16 @@ def train_loop(
                                 else None
                             )
                             
+                            # Create dummy text embeddings for the patch embedding layer
+                            batch_size = noisy_frames.shape[0]
+                            device = noisy_frames.device
+                            dtype = noisy_frames.dtype
+                            dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=device, dtype=dtype)
+                            
                             model_output = model(
                                 hidden_states=noisy_frames,
                                 timestep=timesteps,
-                                encoder_hidden_states=None,  # No text conditioning for inpainting
+                                encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                                 image_rotary_emb=image_rotary_emb,
                             )
                             noise_pred = model_output[0] if isinstance(model_output, tuple) else model_output
@@ -1069,10 +1087,16 @@ def train_one_epoch(
                     else None
                 )
                 
+                # Create dummy text embeddings for the patch embedding layer
+                batch_size = noisy_latents.shape[0]
+                device = noisy_latents.device
+                dtype = noisy_latents.dtype
+                dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=device, dtype=dtype)
+                
                 model_output = transformer(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=None,  # No text conditioning for inpainting
+                    encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,
                 )
