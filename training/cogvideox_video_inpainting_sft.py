@@ -499,7 +499,11 @@ class CogVideoXInpaintingPipeline:
             noise_pred = self.transformer(
                 latent_model_input,
                 t,
-                encoder_hidden_states=None,  # No text conditioning
+                encoder_hidden_states=self.prepare_encoder_hidden_states(
+                    batch_size=latent_model_input.shape[0],
+                    device=self.device,
+                    dtype=self.weight_dtype
+                ),  # Use zero tensor for no text conditioning
                 image_rotary_emb=None,
                 return_dict=False,
             )[0]
@@ -619,7 +623,11 @@ class CogVideoXInpaintingPipeline:
         noise_pred = self.transformer(
             hidden_states=noisy_frames,
             timestep=timesteps.to(dtype=self.weight_dtype),
-            encoder_hidden_states=None,  # No text conditioning for inpainting
+            encoder_hidden_states=self.prepare_encoder_hidden_states(
+                batch_size=noisy_frames.shape[0],
+                device=self.device,
+                dtype=self.weight_dtype
+            ),  # Use zero tensor for no text conditioning
             image_rotary_emb=image_rotary_emb,
             return_dict=False,
         )[0]
@@ -864,8 +872,8 @@ def train_loop(
                 
                 noise_pred = model(
                     hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
-                    timestep=timesteps,
-                    encoder_hidden_states=None if model.ignore_text_encoder else encoder_hidden_states,
+                    timestep=timesteps.to(dtype=model_dtype),
+                    encoder_hidden_states=encoder_hidden_states,
                     image_rotary_emb=image_rotary_emb,
                 ).sample
                 
