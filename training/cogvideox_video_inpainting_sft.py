@@ -1134,13 +1134,14 @@ def main(args):
         video_dir=args.video_dir,
         mask_dir=args.mask_dir,
         gt_dir=args.gt_dir,
+        num_frames=args.num_frames,
         image_size=args.image_size,
-        num_frames=args.max_num_frames,
+        random_flip_h=args.random_flip_h,
+        random_flip_v=args.random_flip_v,
         window_size=args.window_size,
         overlap=args.overlap,
         chunk_size=args.chunk_size,
-        random_flip_h=args.random_flip_h,
-        random_flip_v=args.random_flip_v,
+        vae_precision=args.vae_precision,
     )
 
     val_dataset = VideoInpaintingDataset(
@@ -1148,14 +1149,14 @@ def main(args):
         video_dir=args.video_dir,
         mask_dir=args.mask_dir,
         gt_dir=args.gt_dir,
+        num_frames=args.num_frames,
         image_size=args.image_size,
-        num_frames=args.max_num_frames,
+        random_flip_h=0.0,
+        random_flip_v=0.0,
         window_size=args.window_size,
         overlap=args.overlap,
         chunk_size=args.chunk_size,
-        random_flip_h=0.0,
-        random_flip_v=0.0,
-        validation=True,
+        vae_precision=args.vae_precision,
     )
 
     train_dataloader = DataLoader(

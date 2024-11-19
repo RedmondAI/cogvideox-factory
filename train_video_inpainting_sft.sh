@@ -12,7 +12,7 @@ DATA_ROOT="/var/lib/docker/dataset"
 TRAIN_BATCH_SIZE=1  # Reduced batch size for memory efficiency
 EVAL_BATCH_SIZE=1   # Same as train batch size for consistency
 GRADIENT_ACCUMULATION_STEPS=32  # Increased to maintain effective batch size
-MAX_NUM_FRAMES=32  # Reduced from 49 for memory efficiency
+NUM_FRAMES=32  # Reduced from 49 for memory efficiency
 NUM_TRAIN_EPOCHS=100
 LEARNING_RATE=1e-5
 BETA1=0.9
@@ -125,7 +125,7 @@ deepspeed training/cogvideox_video_inpainting_sft.py \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --eval_batch_size $EVAL_BATCH_SIZE \
     --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
-    --max_num_frames $MAX_NUM_FRAMES \
+    --num_frames $NUM_FRAMES \
     --num_train_epochs $NUM_TRAIN_EPOCHS \
     --learning_rate $LEARNING_RATE \
     --beta1 $BETA1 \
