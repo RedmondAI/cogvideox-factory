@@ -51,6 +51,7 @@ from tqdm.auto import tqdm
 import torch.cuda
 from torch.cuda.amp import autocast, GradScaler
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+from transformers import CLIPTextModelWithProjection
 
 from utils import (
     get_gradient_norm,
@@ -1140,26 +1141,32 @@ def train_one_epoch(
     progress_bar.close()
 
 def main(args):
-    logging_dir = os.path.join(args.output_dir, args.logging_dir)
+    logging_dir = Path(args.output_dir, args.logging_dir)
+    
     accelerator_project_config = ProjectConfiguration(
         project_dir=args.output_dir,
         logging_dir=logging_dir,
     )
     
+    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
-        kwargs_handlers=[
-            DistributedDataParallelKwargs(find_unused_parameters=True),
-            InitProcessGroupKwargs(timeout=timedelta(hours=4)),
-        ],
+        kwargs_handlers=[kwargs],
     )
-    
-    if accelerator.is_main_process:
-        if args.output_dir is not None:
-            os.makedirs(args.output_dir, exist_ok=True)
+
+    # Create pipeline components
+    if args.ignore_text_encoder:
+        logger.info("Initializing pipeline without text encoder for text-free inpainting")
+        text_encoder = None
+    else:
+        text_encoder = CLIPTextModelWithProjection.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="text_encoder",
+            revision=args.revision,
+        )
     
     # Load models with memory optimizations
     vae = AutoencoderKLCogVideoX.from_pretrained(
