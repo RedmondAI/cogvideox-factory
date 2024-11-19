@@ -544,9 +544,9 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         # Get image rotary embeddings
         image_rotary_emb = (
             prepare_rotary_positional_embeddings(
-                height=video.shape[3] * 8,  # Scale back to pixel space
-                width=video.shape[4] * 8,
-                num_frames=video.shape[2],
+                height=video_latents.shape[3] * 8,  # Scale back to pixel space
+                width=video_latents.shape[4] * 8,
+                num_frames=video_latents.shape[2],
                 vae_scale_factor_spatial=8,  # VAE spatial scaling factor
                 patch_size=self.transformer.config.patch_size,
                 attention_head_dim=self.transformer.config.attention_head_dim,
@@ -655,8 +655,8 @@ class CogVideoXInpaintingPipeline(BasePipeline):
         mask = batch["mask"].to(device=device, dtype=dtype)  # [B, 1, T, H, W]
         
         # Create encoder hidden states (zero conditioning for inpainting)
-        encoder_hidden_states = torch.zeros(
-            (video.shape[0], 1, 4096),  # Fixed size for CogVideoX-5b
+        encoder_hidden_states = self.prepare_encoder_hidden_states(
+            batch_size=video.shape[0],
             device=device,
             dtype=dtype
         )
@@ -696,13 +696,13 @@ class CogVideoXInpaintingPipeline(BasePipeline):
             # Get model prediction
             image_rotary_emb = (
                 prepare_rotary_positional_embeddings(
-                    height=video.shape[3] * 8,  # Scale back to pixel space
-                    width=video.shape[4] * 8,
-                    num_frames=video.shape[2],
+                    height=video_latents.shape[3] * 8,  # Scale back to pixel space
+                    width=video_latents.shape[4] * 8,
+                    num_frames=video_latents.shape[2],
                     vae_scale_factor_spatial=8,  # VAE spatial scaling factor
                     patch_size=self.transformer.config.patch_size,
                     attention_head_dim=self.transformer.config.attention_head_dim,
-                    device=video.device,
+                    device=device,
                 )
                 if self.transformer.config.use_rotary_positional_embeddings
                 else None
@@ -716,10 +716,15 @@ class CogVideoXInpaintingPipeline(BasePipeline):
                 return_dict=False,
             )[0]
             
+            # Convert back to [B, C, T, H, W] format for loss computation
+            noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
+            noise = noise.permute(0, 2, 1, 3, 4)
+            noisy_latents = noisy_latents.permute(0, 2, 1, 3, 4)
+            
             # Compute loss with SNR rescaling
             loss = compute_loss_v_pred_with_snr(
                 noise_pred, noise, timesteps, self.scheduler,
-                mask=mask_latents,
+                mask=mask_latents.permute(0, 2, 1, 3, 4),  # Convert mask back to [B, C, T, H, W]
                 noisy_frames=noisy_latents
             )
         
