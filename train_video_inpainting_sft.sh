@@ -112,4 +112,6 @@ deepspeed training/cogvideox_video_inpainting_sft.py \
     --gradient_checkpointing \
     --deepspeed_config configs/deepspeed/ds_config_zero3.json \
     --ignore_text_encoder \
+    --logging_dir logs \
+    --report_to wandb \
     "$@"
