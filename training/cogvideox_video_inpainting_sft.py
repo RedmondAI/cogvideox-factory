@@ -1128,6 +1128,9 @@ def main(args):
         eps=args.epsilon,
     )
 
+    # Calculate max training steps
+    args.max_train_steps = args.num_train_epochs * len(train_dataloader) // args.gradient_accumulation_steps
+
     # Create learning rate scheduler
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
@@ -1177,7 +1180,6 @@ def main(args):
     
     # Calculate training steps
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     args.num_warmup_steps = args.lr_warmup_steps * args.gradient_accumulation_steps
     args.num_training_steps = args.max_train_steps * args.gradient_accumulation_steps
     
