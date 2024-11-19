@@ -405,11 +405,13 @@ class CogVideoXInpaintingPipeline:
         temporal_ratio = self.transformer.config.temporal_compression_ratio
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
         
-        mask = F.interpolate(mask, size=(
-            mask.shape[2]//temporal_ratio,  # Temporal compression from transformer config
-            mask.shape[3]//vae_spatial_ratio,   # VAE spatial compression (8x)
-            mask.shape[4]//vae_spatial_ratio    # VAE spatial compression (8x)
-        ), mode='nearest')
+        mask = mask.permute(0, 1, 2, 3, 4)
+        # Interpolate spatial dimensions only by reshaping to combine batch and time dims
+        mask = F.interpolate(
+            mask.reshape(-1, mask.shape[1], *mask.shape[-2:]),  # Combine batch and time dims
+            size=clean_latents.shape[-2:],
+            mode="nearest"
+        ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], *clean_latents.shape[-2:])  # Restore original shape
         
         return mask
     
@@ -587,14 +589,12 @@ class CogVideoXInpaintingPipeline:
             # Downsample masks to match latent resolution
             # First permute to match expected format [B, C, T, H, W]
             masks = masks.permute(0, 1, 2, 3, 4)
-            # Interpolate spatial dimensions only
+            # Interpolate spatial dimensions only by reshaping to combine batch and time dims
             masks = F.interpolate(
-                masks.reshape(-1, 1, *masks.shape[-2:]),  # Combine batch and time dims
+                masks.reshape(-1, masks.shape[1], *masks.shape[-2:]),  # Combine batch and time dims
                 size=clean_latents.shape[-2:],
                 mode="nearest"
-            )
-            # Restore original shape
-            masks = masks.reshape(clean_latents.shape[0], 1, clean_latents.shape[2], *clean_latents.shape[-2:])
+            ).reshape(masks.shape[0], masks.shape[1], masks.shape[2], *clean_latents.shape[-2:])  # Restore original shape
 
         # Add noise to latents
         noise = torch.randn_like(clean_latents)
@@ -633,7 +633,7 @@ class CogVideoXInpaintingPipeline:
             noise=noise,
             timesteps=timesteps,
             scheduler=self.noise_scheduler,
-            mask=masks,
+            mask=masks.permute(0, 2, 1, 3, 4),  # Match permuted frames
             noisy_frames=noisy_latents
         )
 
