@@ -248,13 +248,13 @@ class CogVideoXInpaintingPipeline:
     """Pipeline for CogVideoX video inpainting."""
     
     def __init__(
-        self,
-        vae,
-        transformer,
-        scheduler,
-        text_encoder=None,
-        tokenizer=None,
-    ):
+            self,
+            vae,
+            transformer,
+            scheduler,
+            text_encoder=None,
+            tokenizer=None,
+        ):
         self.vae = vae
         self.transformer = transformer
         self.scheduler = scheduler
@@ -281,6 +281,9 @@ class CogVideoXInpaintingPipeline:
         self.model_height = transformer.config.sample_height
         self.model_width = transformer.config.sample_width
         self.model_frames = transformer.config.sample_frames
+        
+        # Set text-free inpainting flag
+        self.ignore_text_encoder = text_encoder is None
     
     def validate_dimensions(self, video: torch.Tensor, mask: torch.Tensor):
         """Validate input dimensions."""
