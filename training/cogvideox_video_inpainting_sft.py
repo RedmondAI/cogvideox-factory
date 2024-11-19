@@ -502,8 +502,8 @@ class CogVideoXInpaintingPipeline:
                 encoder_hidden_states=torch.zeros((latent_model_input.shape[0], 1, self.transformer.config.text_embed_dim), device=device, dtype=self.weight_dtype),  # Use zero tensor instead of None
                 image_rotary_emb=None,
                 return_dict=True
-            )
-            noise_pred = model_output.sample if hasattr(model_output, 'sample') else model_output[0]
+            ).sample  # Access .sample directly instead of unpacking
+            noise_pred = model_output
             
             # Perform guidance
             if do_classifier_free_guidance:
