@@ -608,8 +608,7 @@ class CogVideoXInpaintingPipeline:
         num_frames = clean_frames.shape[2]
         
         # Sample timesteps
-        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (batch_size,), device=clean_frames.device).long()
-        timesteps = timesteps.to(device=self.device, dtype=self.dtype)  # Ensure timesteps match model dtype
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (batch_size,), device=clean_frames.device)
         
         # Get latents
         clean_latents = self.encode(clean_frames, return_dict=False)  # Don't return dict, just get tensor directly
