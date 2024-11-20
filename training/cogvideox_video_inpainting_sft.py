@@ -108,8 +108,16 @@ class CogVideoXInpaintingPipeline:
         self.vae = vae
         self.transformer = transformer
         self.noise_scheduler = scheduler
-        self.device = device
-        self.weight_dtype = dtype
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Configure precision based on model type
+        model_name = getattr(transformer.config, "_name_or_path", "").lower()
+        self.dtype = dtype or (torch.bfloat16 if "5b" in model_name else torch.float16)
+        self.weight_dtype = self.dtype
+        
+        # Move models to device and dtype
+        self.vae = self.vae.to(self.device, dtype=self.dtype)
+        self.transformer = self.transformer.to(self.device, dtype=self.dtype)
         
         # Freeze VAE
         self.vae.requires_grad_(False)
@@ -136,10 +144,6 @@ class CogVideoXInpaintingPipeline:
             self.vae.enable_slicing()
         if hasattr(self.vae, 'enable_tiling'):
             self.vae.enable_tiling()
-        
-        # Configure precision based on model type
-        model_name = getattr(transformer.config, "_name_or_path", "").lower()
-        self.dtype = torch.bfloat16 if "5b" in model_name else torch.float16
     
     @property
     def transformer_config(self):
@@ -421,9 +425,9 @@ class CogVideoXInpaintingPipeline:
         # Interpolate spatial dimensions only by reshaping to combine batch and time dims
         mask = F.interpolate(
             mask.reshape(-1, mask.shape[1], *mask.shape[-2:]),  # Combine batch and time dims
-            size=clean_latents.shape[-2:],
+            size=(16, 16),
             mode="nearest"
-        ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], *clean_latents.shape[-2:])  # Restore original shape
+        ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], 16, 16)  # Restore original shape
         
         return mask
     
@@ -853,8 +857,8 @@ def train_loop(
                 
             with accelerator.accumulate(model):
                 # Get input tensors and ensure correct dtype
-                clean_frames = batch["rgb"].to(dtype=model_dtype)  
-                mask = batch["mask"].to(dtype=model_dtype)
+                clean_frames = batch["rgb"].to(device=model.device, dtype=model_dtype)  
+                mask = batch["mask"].to(device=model.device, dtype=model_dtype)
                 
                 # Validate input dimensions
                 B, C, T, H, W = clean_frames.shape
@@ -873,13 +877,13 @@ def train_loop(
                 clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  
                 
                 # Create dummy encoder hidden states (4096 is CogVideoX-5b hidden size)
-                encoder_hidden_states = torch.zeros((B, 1, 4096), device=clean_frames.device, dtype=model_dtype)
+                encoder_hidden_states = torch.zeros((B, 1, 4096), device=model.device, dtype=model_dtype)
                 
-                # Sample timesteps
+                # Sample timesteps and ensure correct dtype
                 timesteps = torch.randint(
                     0, noise_scheduler.config.num_train_timesteps, (B,),
-                    device=clean_frames.device
-                ).to(dtype=model_dtype)  # Cast timesteps to model dtype immediately
+                    device=model.device
+                ).to(dtype=model_dtype)
                 
                 # Add noise
                 noise = torch.randn_like(clean_frames)
@@ -894,7 +898,7 @@ def train_loop(
                         vae_scale_factor_spatial=8,  
                         patch_size=model.config.patch_size,
                         attention_head_dim=model.config.attention_head_dim,
-                        device=clean_frames.device,
+                        device=model.device,
                     )
                     if model.config.use_rotary_positional_embeddings
                     else None
@@ -902,13 +906,11 @@ def train_loop(
                 
                 # Create dummy text embeddings for the patch embedding layer
                 batch_size = noisy_frames.shape[0]
-                device = noisy_frames.device
-                dtype = noisy_frames.dtype
-                dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=device, dtype=dtype)
+                dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=model.device, dtype=model_dtype)
                 
                 model_output = model(
                     hidden_states=noisy_frames,
-                    timestep=timesteps.to(dtype=noisy_frames.dtype),
+                    timestep=timesteps,  # No need to cast timesteps again since we did it earlier
                     encoder_hidden_states=dummy_text_embeds,  
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
