@@ -119,6 +119,10 @@ class CogVideoXInpaintingPipeline:
         self.vae = self.vae.to(self.device, dtype=self.dtype)
         self.transformer = self.transformer.to(self.device, dtype=self.dtype)
         
+        # Ensure transformer's parameters are in correct dtype
+        for param in self.transformer.parameters():
+            param.data = param.data.to(dtype=self.dtype)
+        
         # Freeze VAE
         self.vae.requires_grad_(False)
         self.vae.eval()
@@ -586,6 +590,29 @@ class CogVideoXInpaintingPipeline:
 
     def training_step(self, batch):
         """Execute a training step on a batch of inputs."""
+        # Get clean frames and mask
+        clean_frames = batch["rgb"]
+        mask = batch["mask"]
+        
+        # Validate inputs
+        self.validate_inputs(batch)
+        
+        # Get batch size and dimensions
+        batch_size = clean_frames.shape[0]
+        num_frames = clean_frames.shape[2]
+        
+        # Sample timesteps
+        timesteps = self.noise_scheduler.sample_timesteps(batch_size, device=clean_frames.device)
+        timesteps = timesteps.to(device=self.device, dtype=self.dtype)  # Ensure timesteps match model dtype
+        
+        # Get latents
+        clean_latents = self.encode(clean_frames).latents
+        clean_latents = clean_latents.to(dtype=self.dtype)  # Ensure latents match model dtype
+        
+        # Add noise to latents
+        noise = torch.randn_like(clean_latents, device=clean_latents.device, dtype=self.dtype)  # Generate noise in correct dtype
+        noisy_latents = self.noise_scheduler.add_noise(clean_latents, noise, timesteps)
+        
         # Process in smaller chunks with gradient disabled for VAE
         frames = batch["rgb"].to(self.weight_dtype)  # [B, C, T, H, W]
         mask = batch["mask"].to(self.weight_dtype)   # [B, 1, T, H, W]
