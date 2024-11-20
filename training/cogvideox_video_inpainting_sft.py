@@ -341,12 +341,7 @@ class CogVideoXInpaintingPipeline:
                 
                 # Encode chunk
                 with torch.no_grad():
-                    latent_dist = self.vae.encode(chunk)
-                    if isinstance(latent_dist, DiagonalGaussianDistribution):
-                        chunk_latents = latent_dist.sample()
-                    else:
-                        chunk_latents = latent_dist
-                    
+                    chunk_latents = self.vae.encode(chunk).latent_dist.sample()
                 latents.append(chunk_latents)
             
             # Concatenate chunks
