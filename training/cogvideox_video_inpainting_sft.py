@@ -427,7 +427,7 @@ class CogVideoXInpaintingPipeline:
         # Calculate target spatial dimensions
         target_height = mask.shape[3] // vae_spatial_ratio
         target_width = mask.shape[4] // vae_spatial_ratio
-        target_frames = mask.shape[2] // temporal_ratio
+        target_frames = (mask.shape[2] + temporal_ratio - 1) // temporal_ratio  # Ceiling division
         
         # Interpolate spatial dimensions only by reshaping to combine batch and time dims
         mask = F.interpolate(
