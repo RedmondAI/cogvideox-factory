@@ -661,8 +661,8 @@ class CogVideoXInpaintingPipeline:
         self.validate_inputs(batch)
         
         # Move inputs to correct device and dtype for VAE
-        frames = frames.to(device=self.device, dtype=self.vae.config.torch_dtype)  # Use VAE's dtype
-        mask = mask.to(device=self.device, dtype=self.vae.config.torch_dtype)
+        frames = frames.to(device=self.device, dtype=self.dtype)  # Use pipeline's dtype
+        mask = mask.to(device=self.device, dtype=self.dtype)
         
         # Get timesteps
         timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=self.device)
