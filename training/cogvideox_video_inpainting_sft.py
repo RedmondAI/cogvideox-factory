@@ -427,6 +427,7 @@ class CogVideoXInpaintingPipeline:
         # Calculate target spatial dimensions
         target_height = mask.shape[3] // vae_spatial_ratio
         target_width = mask.shape[4] // vae_spatial_ratio
+        target_frames = mask.shape[2] // temporal_ratio
         
         # Interpolate spatial dimensions only by reshaping to combine batch and time dims
         mask = F.interpolate(
@@ -434,6 +435,14 @@ class CogVideoXInpaintingPipeline:
             size=(target_height, target_width),
             mode="nearest"  # Use nearest neighbor to preserve binary values
         ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], target_height, target_width)  # Restore original shape
+        
+        # Apply temporal compression if needed
+        if temporal_ratio > 1:
+            mask = F.interpolate(
+                mask.permute(0, 2, 1, 3, 4),  # [B, 1, T, H, W] -> [B, T, 1, H, W]
+                size=(target_frames, target_height, target_width),
+                mode="nearest"
+            ).permute(0, 2, 1, 3, 4)  # [B, T, 1, H, W] -> [B, 1, T, H, W]
         
         # Ensure mask remains binary after interpolation
         mask = (mask > 0.5).float()
@@ -616,13 +625,12 @@ class CogVideoXInpaintingPipeline:
                 chunk = frames[i:i+chunk_size]
                 chunk_latents = self.vae.encode(chunk).latent_dist.mode()
                 chunk_latents = chunk_latents * self.vae.config.scaling_factor
+                # Cast to weight_dtype after VAE processing
+                chunk_latents = chunk_latents.to(dtype=self.weight_dtype)
                 latents_list.append(chunk_latents)
             
             # Concatenate all chunks
             latents = torch.cat(latents_list, dim=0)
-            
-            # Convert latents to weight_dtype after VAE processing
-            latents = latents.to(dtype=self.weight_dtype)
             
             # Prepare mask for transformer
             mask_latent = self.prepare_mask(mask).to(dtype=self.weight_dtype)
