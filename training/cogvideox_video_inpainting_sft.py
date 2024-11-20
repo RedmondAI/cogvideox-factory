@@ -662,15 +662,11 @@ class CogVideoXInpaintingPipeline:
         dtype = transformer_input.dtype
         encoder_hidden_states = torch.zeros(batch_size, 1, self.transformer.config.text_embed_dim, device=device, dtype=dtype)
         
-        # Create position IDs for rotary embeddings
-        position_ids = torch.arange(transformer_input.shape[1], device=device)
-        
         # Predict noise
         noise_pred = self.transformer(
             hidden_states=transformer_input,
             timestep=timesteps.to(dtype=transformer_input.dtype),
             encoder_hidden_states=encoder_hidden_states,
-            position_ids=position_ids,
         ).sample
         
         # Convert predictions back to scheduler format [B, C, T, H, W]
