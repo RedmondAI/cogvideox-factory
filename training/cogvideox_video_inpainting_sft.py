@@ -885,8 +885,8 @@ def train_loop(
                 dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=device, dtype=dtype)
                 
                 model_output = model(
-                    hidden_states=noisy_frames,  
-                    timestep=timesteps.to(dtype=model_dtype),
+                    hidden_states=noisy_frames,
+                    timestep=timesteps,
                     encoder_hidden_states=dummy_text_embeds,  
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
@@ -1082,36 +1082,21 @@ def train_one_epoch(
                 del frames, latents
                 torch.cuda.empty_cache()
                 
-                # Predict noise
-                image_rotary_emb = (
-                    prepare_rotary_positional_embeddings(
-                        height=frames.shape[3] * 8,  
-                        width=frames.shape[4] * 8,
-                        num_frames=frames.shape[2],
-                        vae_scale_factor_spatial=8,  
-                        patch_size=transformer.config.patch_size,
-                        attention_head_dim=transformer.config.attention_head_dim,
-                        device=frames.device,
-                    )
-                    if transformer.config.use_rotary_positional_embeddings
-                    else None
-                )
-                
-                # Create dummy text embeddings for the patch embedding layer
+                # Create dummy encoder hidden states
                 batch_size = noisy_latents.shape[0]
                 device = noisy_latents.device
                 dtype = noisy_latents.dtype
-                dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=device, dtype=dtype)
+                encoder_hidden_states = torch.zeros(batch_size, 1, transformer.config.text_embed_dim, device=device, dtype=dtype)
                 
+                # Predict noise
                 model_output = transformer(
                     hidden_states=noisy_latents,
                     timestep=timesteps.to(dtype=noisy_latents.dtype),
-                    encoder_hidden_states=dummy_text_embeds,
-                ).sample  
-                noise_pred = model_output
+                    encoder_hidden_states=encoder_hidden_states,
+                ).sample
                 
                 # Compute loss
-                loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
+                loss = F.mse_loss(model_output.float(), noise.float(), reduction="mean")
             
             # Backprop and optimize
             accelerator.backward(loss)
@@ -1122,7 +1107,7 @@ def train_one_epoch(
             optimizer.zero_grad()
             
             # Free up more memory
-            del noise_pred, noisy_latents, noise
+            del model_output, noisy_latents, noise
             torch.cuda.empty_cache()
         
         progress_bar.update(1)
