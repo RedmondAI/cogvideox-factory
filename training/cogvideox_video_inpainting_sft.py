@@ -664,13 +664,19 @@ class CogVideoXInpaintingPipeline:
         latent_h = H // 8  # VAE spatial reduction
         latent_w = W // 8
         latent_t = noisy_latents.shape[2]  # Use temporal dimension from noisy_latents
+        
+        # First ensure mask is binary
+        mask = (mask > 0.5).float()
+        
+        # Use nearest neighbor interpolation to preserve binary values
         mask_latent = F.interpolate(
-            mask.view(B, 1, T, H, W).float(),
+            mask.view(B, 1, T, H, W),
             size=(latent_t, latent_h, latent_w),
-            mode='trilinear',
-            align_corners=False
+            mode='nearest'
         )
-        mask_latent = (mask_latent > 0.5).float()  # Re-binarize
+        
+        # Re-binarize just to be safe
+        mask_latent = (mask_latent > 0.5).float()
         
         # Convert to [B, T, C, H, W] format for transformer
         noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
