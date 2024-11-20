@@ -627,6 +627,7 @@ class CogVideoXInpaintingPipeline:
             hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
             timestep=timesteps.to(dtype=self.weight_dtype),
             encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
+            cross_attention_kwargs={"scale": 0.0},  # Disable cross attention
             image_rotary_emb=image_rotary_emb,
             return_dict=True
         ).sample  # Access .sample directly instead of unpacking
@@ -876,6 +877,7 @@ def train_loop(
                     hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
                     timestep=timesteps.to(dtype=model_dtype),
                     encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
+                    cross_attention_kwargs={"scale": 0.0},  # Disable cross attention
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
                 ).sample  # Access .sample directly instead of unpacking
@@ -965,6 +967,7 @@ def train_loop(
                                 hidden_states=noisy_frames,
                                 timestep=timesteps,
                                 encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
+                                cross_attention_kwargs={"scale": 0.0},  # Disable cross attention
                                 image_rotary_emb=image_rotary_emb,
                                 return_dict=True
                             ).sample  # Access .sample directly instead of unpacking
@@ -1095,6 +1098,7 @@ def train_one_epoch(
                     noisy_latents,
                     timesteps,
                     encoder_hidden_states=None,  # Use None since we don't need text conditioning
+                    cross_attention_kwargs={"scale": 0.0},  # Disable cross attention
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
                 ).sample  # Access .sample directly instead of unpacking
