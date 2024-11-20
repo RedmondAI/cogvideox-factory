@@ -637,10 +637,21 @@ class CogVideoXInpaintingPipeline:
         # Convert to [B, T, C, H, W] format for transformer
         noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
         
+        # Print shapes for debugging
+        print(f"noisy_frames shape: {noisy_frames.shape}")
+        print(f"mask_latent shape before permute: {mask_latent.shape}")
+        
         # Expand mask to match noisy_frames channel dimension
         C = noisy_frames.shape[2]  # Get number of channels from noisy_frames
         mask_latent = mask_latent.permute(0, 2, 1, 3, 4)  # [B, T, 1, H, W]
+        
+        print(f"mask_latent shape after permute: {mask_latent.shape}")
+        print(f"Expanding mask to {C} channels")
+        
         mask_latent = mask_latent.expand(-1, -1, C, -1, -1)  # Expand to match channels
+        
+        print(f"mask_latent shape after expand: {mask_latent.shape}")
+        print(f"Attempting to concatenate along dim 2 (channel dim)")
         
         # Concatenate mask with noisy frames along channel dimension
         transformer_input = torch.cat([noisy_frames, mask_latent], dim=2)
