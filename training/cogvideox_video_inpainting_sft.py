@@ -583,7 +583,10 @@ class CogVideoXInpaintingPipeline:
     def training_step(self, batch):
         """Execute a training step on a batch of inputs."""
         # Process in smaller chunks with gradient disabled for VAE
-        frames = batch["frames"].to(self.weight_dtype)
+        frames = batch["rgb"].to(self.weight_dtype)  # [B, C, T, H, W]
+        mask = batch["mask"].to(self.weight_dtype)   # [B, 1, T, H, W]
+        gt = batch["gt"].to(self.weight_dtype)       # [B, C, T, H, W]
+        
         chunk_size = 1  
         latents_list = []
         
@@ -614,25 +617,43 @@ class CogVideoXInpaintingPipeline:
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
         
         # Free up memory
-        del frames, latents
+        del frames
         torch.cuda.empty_cache()
+        
+        # Prepare mask for latent space
+        # Downsample mask to match latent dimensions
+        B, _, T, H, W = mask.shape
+        latent_h = H // 8  # VAE spatial reduction
+        latent_w = W // 8
+        latent_t = T // 4  # VAE temporal reduction
+        mask_latent = F.interpolate(
+            mask.view(B, 1, T, H, W).float(),
+            size=(latent_t, latent_h, latent_w),
+            mode='trilinear',
+            align_corners=False
+        )
+        mask_latent = (mask_latent > 0.5).float()  # Re-binarize
         
         # Convert to [B, T, C, H, W] format for transformer
         noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
+        mask_latent = mask_latent.permute(0, 2, 1, 3, 4)
         
-        # Create dummy encoder hidden states
-        batch_size = noisy_frames.shape[0]
-        device = noisy_frames.device
-        dtype = noisy_frames.dtype
+        # Concatenate mask with noisy frames along channel dimension
+        transformer_input = torch.cat([noisy_frames, mask_latent], dim=2)
+        
+        # Create dummy encoder hidden states (no text conditioning)
+        batch_size = transformer_input.shape[0]
+        device = transformer_input.device
+        dtype = transformer_input.dtype
         encoder_hidden_states = torch.zeros(batch_size, 1, self.transformer.config.text_embed_dim, device=device, dtype=dtype)
         
         # Create position IDs for rotary embeddings
-        position_ids = torch.arange(noisy_frames.shape[1], device=device)
+        position_ids = torch.arange(transformer_input.shape[1], device=device)
         
         # Predict noise
         noise_pred = self.transformer(
-            hidden_states=noisy_frames,
-            timestep=timesteps.to(dtype=noisy_frames.dtype),
+            hidden_states=transformer_input,
+            timestep=timesteps.to(dtype=transformer_input.dtype),
             encoder_hidden_states=encoder_hidden_states,
             position_ids=position_ids,
         ).sample
@@ -644,7 +665,7 @@ class CogVideoXInpaintingPipeline:
         loss = F.mse_loss(noise_pred_scheduler.float(), noise.float(), reduction="mean")
         
         # Free up more memory
-        del noise_pred, noisy_latents, noise
+        del noise_pred, noisy_latents, noise, transformer_input
         torch.cuda.empty_cache()
         
         return loss
@@ -891,7 +912,7 @@ def train_loop(
                 loss = compute_loss_v_pred_with_snr(
                     noise_pred, noise, timesteps, noise_scheduler,
                     mask=mask.permute(0, 2, 1, 3, 4),  
-                    noisy_frames=noisy_frames
+                    noisy_frames=clean_frames
                 )
                 
                 # Verify loss is valid
