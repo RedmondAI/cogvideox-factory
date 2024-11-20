@@ -426,7 +426,7 @@ class CogVideoXInpaintingPipeline:
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
         
         # Ensure mask is binary before processing
-        mask = (mask > 0.5).to(mask.dtype)
+        mask = (mask > 0.5).float()
         
         mask = mask.permute(0, 1, 2, 3, 4)
         # Interpolate spatial dimensions only by reshaping to combine batch and time dims
@@ -437,7 +437,7 @@ class CogVideoXInpaintingPipeline:
         ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], 16, 16)  # Restore original shape
         
         # Ensure mask is binary after interpolation
-        mask = (mask > 0.5).to(mask.dtype)
+        mask = (mask > 0.5).float()
         
         return mask
     
