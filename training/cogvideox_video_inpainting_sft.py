@@ -596,132 +596,55 @@ class CogVideoXInpaintingPipeline:
 
     def training_step(self, batch):
         """Execute a training step on a batch of inputs."""
-        # Get clean frames and mask
-        clean_frames = batch["rgb"]
-        mask = batch["mask"]
+        frames, mask = batch["frames"], batch["mask"]
         
         # Validate inputs
         self.validate_inputs(batch)
         
-        # Get batch size and dimensions
-        batch_size = clean_frames.shape[0]
-        num_frames = clean_frames.shape[2]
+        # Move inputs to correct device and dtype for VAE
+        frames = frames.to(device=self.device, dtype=torch.float32)  # VAE expects float32
+        mask = mask.to(device=self.device, dtype=torch.float32)
         
-        # Sample timesteps
-        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (batch_size,), device=clean_frames.device)
+        # Get timesteps
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=self.device)
         
-        # Get latents
-        clean_latents = self.encode(clean_frames, return_dict=False)  # Don't return dict, just get tensor directly
-        clean_latents = clean_latents.to(dtype=self.dtype)  # Ensure latents match model dtype
+        # Prepare latents
+        latents = self.vae.encode(frames).latent_dist.sample()
+        latents = latents * self.vae.config.scaling_factor
+        
+        # Convert latents to weight_dtype after VAE processing
+        latents = latents.to(dtype=self.weight_dtype)
         
         # Add noise to latents
-        noise = torch.randn_like(clean_latents, device=clean_latents.device, dtype=self.dtype)  # Generate noise in correct dtype
-        noisy_latents = self.noise_scheduler.add_noise(clean_latents, noise, timesteps)
+        noise = torch.randn_like(latents, device=self.device, dtype=self.weight_dtype)
+        noisy_frames = self.noise_scheduler.add_noise(latents, noise, timesteps)
         
-        # Process in smaller chunks with gradient disabled for VAE
-        frames = batch["rgb"].to(self.weight_dtype)  # [B, C, T, H, W]
-        mask = batch["mask"].to(self.weight_dtype)   # [B, 1, T, H, W]
-        mask = (mask > 0.5).to(self.weight_dtype)
-        gt = batch["gt"].to(self.weight_dtype)       # [B, C, T, H, W]
+        # Prepare mask for transformer
+        mask_latent = self.prepare_mask(mask).to(dtype=self.weight_dtype)
         
-        chunk_size = 1  
-        latents_list = []
-        
-        # Split frames into chunks
-        for i in range(0, frames.shape[0], chunk_size):
-            chunk = frames[i:i+chunk_size]
-            torch.cuda.empty_cache()
-            
-            # Move chunk to CPU after processing if needed
-            with torch.no_grad():
-                latents_chunk = self.vae.encode(chunk).latent_dist.sample()
-                latents_chunk = latents_chunk * self.vae.config.scaling_factor
-                latents_chunk = latents_chunk.to(dtype=self.weight_dtype)
-                latents_list.append(latents_chunk.cpu() if i + chunk_size < frames.shape[0] else latents_chunk)
-            del chunk
-            torch.cuda.empty_cache()
-        
-        # Concatenate all chunks
-        if len(latents_list) > 1:
-            latents = torch.cat([chunk.cuda() if chunk.device.type == 'cpu' else chunk for chunk in latents_list], dim=0)
-        else:
-            latents = latents_list[0]
-        del latents_list
-        torch.cuda.empty_cache()
-        
-        # Get noise
-        noise = torch.randn_like(latents)
-        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)  # Keep timesteps as long tensor
-        noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
-        
-        # Free up memory
-        del frames
-        torch.cuda.empty_cache()
-        
-        # Prepare mask for latent space
-        # Downsample mask to match latent dimensions
-        B, _, T, H, W = mask.shape
-        latent_h = H // 8  # VAE spatial reduction
-        latent_w = W // 8
-        latent_t = noisy_latents.shape[2]  # Use temporal dimension from noisy_latents
-        
-        # First ensure mask is binary
-        mask = (mask > 0.5).float()
-        
-        # Use nearest neighbor interpolation to preserve binary values
-        mask_latent = F.interpolate(
-            mask.view(B, 1, T, H, W),
-            size=(latent_t, latent_h, latent_w),
-            mode='nearest'
-        )
-        
-        # Re-binarize just to be safe
-        mask_latent = (mask_latent > 0.5).float()
-        
-        # Convert to [B, T, C, H, W] format for transformer
-        noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
-        
-        # Print shapes for debugging
-        print(f"noisy_frames shape: {noisy_frames.shape}")
-        print(f"mask_latent shape before permute: {mask_latent.shape}")
-        
-        # Expand mask to match noisy_frames channel dimension
-        C = noisy_frames.shape[2]  # Get number of channels from noisy_frames
-        mask_latent = mask_latent.permute(0, 2, 1, 3, 4)  # [B, T, 1, H, W]
-        
-        print(f"mask_latent shape after permute: {mask_latent.shape}")
-        print(f"Expanding mask to {C} channels")
-        
-        mask_latent = mask_latent.expand(-1, -1, C, -1, -1)  # Expand to match channels
-        
-        print(f"mask_latent shape after expand: {mask_latent.shape}")
-        print(f"Attempting to concatenate along dim 2 (channel dim)")
-        
-        # Concatenate mask with noisy frames along channel dimension
+        # Ensure all inputs to transformer are in correct dtype
         transformer_input = torch.cat([noisy_frames, mask_latent], dim=2)
+        timesteps = timesteps.to(dtype=self.weight_dtype)
         
         # Create dummy encoder hidden states (no text conditioning)
         batch_size = transformer_input.shape[0]
-        device = transformer_input.device
-        dtype = transformer_input.dtype
-        encoder_hidden_states = torch.zeros(batch_size, 1, self.transformer.config.text_embed_dim, device=device, dtype=dtype)
+        encoder_hidden_states = torch.zeros(
+            batch_size, 1, self.transformer.config.text_embed_dim, 
+            device=self.device, dtype=self.weight_dtype
+        )
         
         # Predict noise
         noise_pred = self.transformer(
             hidden_states=transformer_input,
-            timestep=timesteps.to(dtype=transformer_input.dtype),
+            timestep=timesteps,
             encoder_hidden_states=encoder_hidden_states,
         ).sample
         
         # Convert predictions back to scheduler format [B, C, T, H, W]
         noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
         
-        # Compute loss
-        loss = F.mse_loss(noise_pred_scheduler.float(), noise.float(), reduction="mean")
-        
-        # Free up memory
-        del noise_pred, noisy_latents, noise, transformer_input
-        torch.cuda.empty_cache()
+        # Compute loss (both tensors should already be in weight_dtype)
+        loss = F.mse_loss(noise_pred_scheduler, noise, reduction="mean")
         
         return loss
     
