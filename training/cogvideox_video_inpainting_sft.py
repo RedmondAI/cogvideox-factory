@@ -879,7 +879,7 @@ def train_loop(
                 timesteps = torch.randint(
                     0, noise_scheduler.config.num_train_timesteps, (B,),
                     device=clean_frames.device
-                )
+                ).to(dtype=model_dtype)  # Cast timesteps to model dtype immediately
                 
                 # Add noise
                 noise = torch.randn_like(clean_frames)
@@ -1097,7 +1097,7 @@ def train_one_epoch(
                 
                 # Get noise
                 noise = torch.randn_like(latents)
-                timesteps = torch.randint(0, args.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)
+                timesteps = torch.randint(0, args.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device).to(dtype=latents.dtype)  # Cast timesteps to model dtype immediately
                 noisy_latents = args.noise_scheduler.add_noise(latents, noise, timesteps)
                 
                 # Free up memory
