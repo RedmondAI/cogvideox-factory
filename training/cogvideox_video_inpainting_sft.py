@@ -1094,8 +1094,8 @@ def train_one_epoch(
             with torch.cuda.amp.autocast(device_type='cuda', enabled=True, dtype=weight_dtype):
                 # Get input frames and ensure correct shape [B, C, T, H, W]
                 frames = batch["rgb"]
-                if frames.ndim == 5:  # [B, T, C, H, W]
-                    frames = frames.permute(0, 2, 1, 3, 4)
+                if frames.ndim == 5 and frames.shape[1] != 3:  # [B, T, C, H, W]
+                    frames = frames.permute(0, 2, 1, 3, 4)  # -> [B, C, T, H, W]
                 
                 # Process in chunks with gradient disabled for VAE
                 chunk_size = min(8, frames.shape[2])  # Process up to 8 frames at once
@@ -1103,10 +1103,10 @@ def train_one_epoch(
                 
                 # Split frames into temporal chunks
                 for i in range(0, frames.shape[2], chunk_size):
-                    chunk = frames[:, :, i:i+chunk_size]
+                    chunk = frames[:, :, i:i+chunk_size]  # [B, C, T', H, W]
                     with torch.no_grad():
                         # Encode chunk
-                        latents_chunk = vae.encode(chunk).latent_dist.sample()
+                        latents_chunk = vae.encode(chunk).latent_dist.sample()  # [B, C', T', H/8, W/8]
                         latents_chunk = latents_chunk * vae.config.scaling_factor
                         # Cast to weight_dtype after VAE processing
                         latents_chunk = latents_chunk.to(dtype=weight_dtype)
@@ -1118,7 +1118,7 @@ def train_one_epoch(
                 if len(latents_list) > 1:
                     latents = torch.cat([chunk.cuda() if chunk.device.type == 'cpu' else chunk for chunk in latents_list], dim=2)
                 else:
-                    latents = latents_list[0]
+                    latents = latents_list[0]  # [B, C', T, H/8, W/8]
                 del latents_list
                 torch.cuda.empty_cache()
                 
@@ -1136,9 +1136,9 @@ def train_one_epoch(
                     )
                 
                 # Get noise and timesteps
-                noise = torch.randn_like(latents)
+                noise = torch.randn_like(latents)  # [B, C', T, H/8, W/8]
                 timesteps = torch.randint(0, args.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)
-                noisy_latents = args.noise_scheduler.add_noise(latents, noise, timesteps)
+                noisy_latents = args.noise_scheduler.add_noise(latents, noise, timesteps)  # [B, C', T, H/8, W/8]
                 
                 # Free up memory
                 del frames, latents
@@ -1148,13 +1148,13 @@ def train_one_epoch(
                 batch_size = noisy_latents.shape[0]
                 encoder_hidden_states = torch.zeros(
                     batch_size, 
-                    1, 
+                    target_frames,  # Match temporal dimension
                     transformer.config.text_embed_dim, 
                     device=noisy_latents.device, 
                     dtype=weight_dtype
                 )
                 
-                # Convert to [B, T, C, H, W] format for transformer
+                # Rearrange dimensions for transformer [B, T, C, H, W]
                 noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
                 
                 # Create position IDs for rotary embeddings
@@ -1163,18 +1163,18 @@ def train_one_epoch(
                 # Cast timesteps to weight_dtype before passing to transformer
                 timesteps = timesteps.to(dtype=weight_dtype)
                 
-                # Predict noise
+                # Predict noise (transformer expects [B, T, C, H, W])
                 noise_pred = transformer(
                     hidden_states=noisy_frames,
                     timestep=timesteps,
                     encoder_hidden_states=encoder_hidden_states,
                     position_ids=position_ids,
-                ).sample
+                ).sample  # Output is [B, T, C, H, W]
                 
                 # Convert predictions back to scheduler format [B, C, T, H, W]
                 noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
                 
-                # Compute loss
+                # Compute loss (both tensors in [B, C, T, H, W] format)
                 loss = F.mse_loss(noise_pred_scheduler.float(), noise.float(), reduction="mean")
             
             # Backprop and optimize
