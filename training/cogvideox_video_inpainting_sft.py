@@ -661,28 +661,31 @@ class CogVideoXInpaintingPipeline:
         # Encode frames to latent space
         with torch.no_grad():
             # Reshape frames to match VAE's expected input shape [B, C, T, H, W]
-            frames = frames.permute(0, 2, 1, 3, 4)
+            frames = frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W] -> [B, C, T, H, W]
             latents = self.vae.encode(frames).latent_dist.sample()
-            # Reshape latents back to [B, T, C, H, W]
-            latents = latents.permute(0, 2, 1, 3, 4)
-        
+            latents = latents * self.vae.config.scaling_factor
+            # Keep latents in [B, C, T, H, W] format for noise scheduler
+            
         # Prepare mask for latent space
         mask_latent = self.prepare_mask(mask)
         
-        # Add noise to latents
+        # Add noise to latents (keeping [B, C, T, H, W] format)
         noise = torch.randn_like(latents)
         timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=latents.device)
         noisy_frames = self.noise_scheduler.add_noise(latents, noise, timesteps)
         
         # Handle temporal dimensions for transformer input
         target_frames = self.transformer.config.sample_frames
-        if noisy_frames.shape[1] != target_frames:
+        if noisy_frames.shape[2] != target_frames:  # Check temporal dim (T) at index 2
             noisy_frames = F.interpolate(
-                noisy_frames.permute(0, 2, 1, 3, 4),  # [B, T, C, H, W] -> [B, C, T, H, W]
+                noisy_frames,  # Already in [B, C, T, H, W]
                 size=(target_frames, noisy_frames.shape[3], noisy_frames.shape[4]),
                 mode='trilinear',
                 align_corners=False
-            ).permute(0, 2, 1, 3, 4)  # [B, C, T, H, W] -> [B, T, C, H, W]
+            )
+        
+        # Convert to [B, T, C, H, W] for transformer
+        noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
         
         # Concatenate noisy frames with mask along channel dimension
         transformer_input = torch.cat([noisy_frames, mask_latent], dim=2)
