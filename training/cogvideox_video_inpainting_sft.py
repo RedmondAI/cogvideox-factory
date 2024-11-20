@@ -421,23 +421,28 @@ class CogVideoXInpaintingPipeline:
             Processed mask of shape [B, 1, T//temporal_ratio, H//8, W//8]
             where temporal_ratio is from transformer config and 8 is VAE's spatial compression
         """
+        # Validate input mask is binary
+        if not torch.all(torch.logical_or(mask == 0, mask == 1)):
+            raise ValueError("Input mask must contain only binary values (0 or 1)")
+        
         # Use transformer's temporal compression ratio and VAE's spatial ratio
         temporal_ratio = self.transformer.config.temporal_compression_ratio
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
-        
-        # Ensure mask is binary before processing
-        mask = (mask > 0.5).float()
         
         mask = mask.permute(0, 1, 2, 3, 4)
         # Interpolate spatial dimensions only by reshaping to combine batch and time dims
         mask = F.interpolate(
             mask.reshape(-1, mask.shape[1], *mask.shape[-2:]),  # Combine batch and time dims
             size=(16, 16),
-            mode="nearest"
+            mode="nearest"  # Use nearest neighbor to preserve binary values
         ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], 16, 16)  # Restore original shape
         
-        # Ensure mask is binary after interpolation
+        # Ensure mask remains binary after interpolation
         mask = (mask > 0.5).float()
+        
+        # Validate output mask is binary
+        if not torch.all(torch.logical_or(mask == 0, mask == 1)):
+            raise ValueError("Mask contains non-binary values after processing")
         
         return mask
     

@@ -510,18 +510,27 @@ class VideoInpaintingDataset(Dataset):
         # Convert to tensor
         mask = TT.ToTensor()(mask)
         
-        # Threshold to ensure binary values (0 or 1)
+        # Ensure values are in [0, 1] range
+        mask = torch.clamp(mask, 0.0, 1.0)
+        
+        # Strict binary thresholding
         mask = (mask > 0.5).float()
         
         # Apply any additional transforms
         if self.mask_transform is not None:
             mask = self.mask_transform(mask)
+            # Re-threshold after transforms to ensure binary
+            mask = (mask > 0.5).float()
         
         # Ensure single channel
         if mask.ndim == 2:
             mask = mask.unsqueeze(0)
         elif mask.ndim == 3 and mask.shape[0] != 1:
             mask = mask[0:1]
+        
+        # Final validation
+        if not torch.all(torch.logical_or(mask == 0, mask == 1)):
+            raise ValueError(f"Mask from {path} contains non-binary values after processing")
         
         return mask
     
