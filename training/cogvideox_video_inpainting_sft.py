@@ -1113,7 +1113,7 @@ def train_one_epoch(
         with accelerator.accumulate(transformer):
             with torch.cuda.amp.autocast(device_type='cuda', enabled=True, dtype=weight_dtype):
                 # Process in smaller chunks with gradient disabled for VAE
-                frames = batch["frames"].to(weight_dtype)
+                frames = batch["frames"]  # Keep original dtype for VAE
                 chunk_size = 1  
                 latents_list = []
                 
@@ -1126,6 +1126,8 @@ def train_one_epoch(
                     with torch.no_grad():
                         latents_chunk = vae.encode(chunk).latent_dist.sample()
                         latents_chunk = latents_chunk * vae.config.scaling_factor
+                        # Cast to weight_dtype after VAE processing
+                        latents_chunk = latents_chunk.to(dtype=weight_dtype)
                         latents_list.append(latents_chunk.cpu() if i + chunk_size < frames.shape[0] else latents_chunk)
                     del chunk
                     torch.cuda.empty_cache()
@@ -1140,7 +1142,7 @@ def train_one_epoch(
                 
                 # Get noise
                 noise = torch.randn_like(latents)
-                timesteps = torch.randint(0, args.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)  # Keep timesteps as long tensor
+                timesteps = torch.randint(0, args.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)
                 noisy_latents = args.noise_scheduler.add_noise(latents, noise, timesteps)
                 
                 # Free up memory
@@ -1150,7 +1152,7 @@ def train_one_epoch(
                 # Create dummy encoder hidden states
                 batch_size = noisy_latents.shape[0]
                 device = noisy_latents.device
-                dtype = noisy_latents.dtype
+                dtype = weight_dtype  # Use weight_dtype consistently
                 encoder_hidden_states = torch.zeros(batch_size, 1, transformer.config.text_embed_dim, device=device, dtype=dtype)
                 
                 # Convert to [B, T, C, H, W] format for transformer
@@ -1162,7 +1164,7 @@ def train_one_epoch(
                 # Predict noise
                 noise_pred = transformer(
                     hidden_states=noisy_frames,
-                    timestep=timesteps.to(dtype=noisy_frames.dtype),
+                    timestep=timesteps.to(dtype=weight_dtype),  # Cast timesteps to weight_dtype
                     encoder_hidden_states=encoder_hidden_states,
                     position_ids=position_ids,
                 ).sample
