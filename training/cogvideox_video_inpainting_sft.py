@@ -613,7 +613,7 @@ class CogVideoXInpaintingPipeline:
         num_frames = clean_frames.shape[2]
         
         # Sample timesteps
-        timesteps = self.noise_scheduler.sample_timesteps(batch_size, device=clean_frames.device)
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (batch_size,), device=clean_frames.device)
         timesteps = timesteps.to(device=self.device, dtype=self.dtype)  # Ensure timesteps match model dtype
         
         # Get latents
@@ -656,7 +656,7 @@ class CogVideoXInpaintingPipeline:
         
         # Get noise
         noise = torch.randn_like(latents)
-        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device).to(dtype=latents.dtype)  # Cast timesteps to model dtype immediately
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
         
         # Free up memory
