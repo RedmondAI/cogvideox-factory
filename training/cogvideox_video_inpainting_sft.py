@@ -1076,15 +1076,11 @@ def train_one_epoch(
     transformer.train()
     vae.eval()  
     
-    # Enable gradient checkpointing for transformer
+    # Enable gradient checkpointing and memory optimizations
     if hasattr(transformer, "enable_gradient_checkpointing"):
         transformer.enable_gradient_checkpointing()
         if hasattr(transformer, 'set_use_memory_efficient_attention_xformers'):
             transformer.set_use_memory_efficient_attention_xformers(True)
-
-    # Enable memory efficient attention if available
-    if hasattr(transformer, "set_use_memory_efficient_attention_xformers"):
-        transformer.set_use_memory_efficient_attention_xformers(True)
     
     progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
     progress_bar.set_description(f"Epoch {epoch}")
@@ -1096,35 +1092,50 @@ def train_one_epoch(
         
         with accelerator.accumulate(transformer):
             with torch.cuda.amp.autocast(device_type='cuda', enabled=True, dtype=weight_dtype):
-                # Process in smaller chunks with gradient disabled for VAE
-                frames = batch["rgb"]  # Keep original dtype for VAE
-                chunk_size = 1  
+                # Get input frames and ensure correct shape [B, C, T, H, W]
+                frames = batch["rgb"]
+                if frames.ndim == 5:  # [B, T, C, H, W]
+                    frames = frames.permute(0, 2, 1, 3, 4)
+                
+                # Process in chunks with gradient disabled for VAE
+                chunk_size = min(8, frames.shape[2])  # Process up to 8 frames at once
                 latents_list = []
                 
-                # Split frames into chunks
-                for i in range(0, frames.shape[0], chunk_size):
-                    chunk = frames[i:i+chunk_size]
-                    torch.cuda.empty_cache()
-                    
-                    # Move chunk to CPU after processing if needed
+                # Split frames into temporal chunks
+                for i in range(0, frames.shape[2], chunk_size):
+                    chunk = frames[:, :, i:i+chunk_size]
                     with torch.no_grad():
+                        # Encode chunk
                         latents_chunk = vae.encode(chunk).latent_dist.sample()
                         latents_chunk = latents_chunk * vae.config.scaling_factor
                         # Cast to weight_dtype after VAE processing
                         latents_chunk = latents_chunk.to(dtype=weight_dtype)
-                        latents_list.append(latents_chunk.cpu() if i + chunk_size < frames.shape[0] else latents_chunk)
+                        latents_list.append(latents_chunk.cpu() if i + chunk_size < frames.shape[2] else latents_chunk)
                     del chunk
                     torch.cuda.empty_cache()
                 
-                # Concatenate all chunks
+                # Concatenate all chunks along temporal dimension
                 if len(latents_list) > 1:
-                    latents = torch.cat([chunk.cuda() if chunk.device.type == 'cpu' else chunk for chunk in latents_list], dim=0)
+                    latents = torch.cat([chunk.cuda() if chunk.device.type == 'cpu' else chunk for chunk in latents_list], dim=2)
                 else:
                     latents = latents_list[0]
                 del latents_list
                 torch.cuda.empty_cache()
                 
-                # Get noise
+                # Handle temporal dimensions for transformer
+                target_frames = transformer.config.sample_frames
+                current_frames = latents.shape[2]
+                
+                if current_frames != target_frames:
+                    # Use trilinear interpolation for temporal adjustment
+                    latents = F.interpolate(
+                        latents,
+                        size=(target_frames, latents.shape[3], latents.shape[4]),
+                        mode='trilinear',
+                        align_corners=False
+                    )
+                
+                # Get noise and timesteps
                 noise = torch.randn_like(latents)
                 timesteps = torch.randint(0, args.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)
                 noisy_latents = args.noise_scheduler.add_noise(latents, noise, timesteps)
@@ -1133,17 +1144,21 @@ def train_one_epoch(
                 del frames, latents
                 torch.cuda.empty_cache()
                 
-                # Create dummy encoder hidden states
+                # Create dummy encoder hidden states (zero tensors for inpainting)
                 batch_size = noisy_latents.shape[0]
-                device = noisy_latents.device
-                dtype = weight_dtype  # Use weight_dtype consistently
-                encoder_hidden_states = torch.zeros(batch_size, 1, transformer.config.text_embed_dim, device=device, dtype=dtype)
+                encoder_hidden_states = torch.zeros(
+                    batch_size, 
+                    1, 
+                    transformer.config.text_embed_dim, 
+                    device=noisy_latents.device, 
+                    dtype=weight_dtype
+                )
                 
                 # Convert to [B, T, C, H, W] format for transformer
                 noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
                 
                 # Create position IDs for rotary embeddings
-                position_ids = torch.arange(noisy_frames.shape[1], device=device)
+                position_ids = torch.arange(noisy_frames.shape[1], device=noisy_frames.device)
                 
                 # Cast timesteps to weight_dtype before passing to transformer
                 timesteps = timesteps.to(dtype=weight_dtype)
@@ -1170,27 +1185,13 @@ def train_one_epoch(
             scheduler.step()
             optimizer.zero_grad()
             
-            # Free up more memory
-            del model_output, noisy_latents, noise
-            torch.cuda.empty_cache()
-        
-        progress_bar.update(1)
-        logs = {"loss": loss.detach().item(), "lr": optimizer.param_groups[0]["lr"]}
-        progress_bar.set_postfix(**logs)
-        accelerator.log(logs, step=epoch * len(train_dataloader) + step)
-        
-        # Monitor memory usage
-        if accelerator.is_local_main_process and step % 100 == 0:
-            memory_allocated = torch.cuda.memory_allocated() / 1024**3
-            max_memory_allocated = torch.cuda.max_memory_allocated() / 1024**3
-            memory_reserved = torch.cuda.memory_reserved() / 1024**3
-            print(f"\nStep {step} Memory Stats:")
-            print(f"  Current memory allocated: {memory_allocated:.2f}GB")
-            print(f"  Max memory allocated: {max_memory_allocated:.2f}GB")
-            print(f"  Memory reserved: {memory_reserved:.2f}GB")
+            # Update progress bar
+            progress_bar.update(1)
+            progress_bar.set_postfix(loss=loss.detach().item())
             
-            # Reset peak memory stats periodically
-            torch.cuda.reset_peak_memory_stats()
+            # Free up more memory
+            del noise_pred, noise_pred_scheduler, noisy_latents, noise
+            torch.cuda.empty_cache()
     
     progress_bar.close()
 
