@@ -511,10 +511,10 @@ class CogVideoXInpaintingPipeline:
             model_output = self.transformer(
                 hidden_states=latent_model_input,
                 timestep=t,
-                encoder_hidden_states=None,  # Use None since we don't need text conditioning
+                encoder_hidden_states=None,  
                 image_rotary_emb=None,
                 return_dict=True
-            ).sample  # Access .sample directly instead of unpacking
+            ).sample  
             noise_pred = model_output
             
             # Perform guidance
@@ -636,13 +636,12 @@ class CogVideoXInpaintingPipeline:
 
         # Get model prediction without text conditioning
         model_output = self.transformer(
-            hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
+            hidden_states=noisy_frames,  
             timestep=timesteps.to(dtype=self.weight_dtype),
-            encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
-            cross_attention_kwargs={"scale": 0.0},  # Disable cross attention
+            encoder_hidden_states=dummy_text_embeds,  
             image_rotary_emb=image_rotary_emb,
             return_dict=True
-        ).sample  # Access .sample directly instead of unpacking
+        ).sample  
         noise_pred = model_output
         
         # Convert predictions back to [B, C, T, H, W] format
@@ -654,7 +653,7 @@ class CogVideoXInpaintingPipeline:
             noise=noise,
             timesteps=timesteps,
             scheduler=self.noise_scheduler,
-            mask=masks.permute(0, 2, 1, 3, 4),  # Match permuted frames
+            mask=masks.permute(0, 2, 1, 3, 4),  
             noisy_frames=noisy_latents
         )
 
@@ -813,7 +812,7 @@ def train_loop(
     
     # Create layer norm for hidden states
     hidden_norm = create_layer_norm(
-        model.patch_embed.proj.out_channels,  # Use output channels from patch embedding
+        model.patch_embed.proj.out_channels,  
         model.config,
         model.device,
         model_dtype
@@ -832,7 +831,7 @@ def train_loop(
                 
             with accelerator.accumulate(model):
                 # Get input tensors and ensure correct dtype
-                clean_frames = batch["rgb"].to(dtype=model_dtype)  # [B, C, T, H, W]
+                clean_frames = batch["rgb"].to(dtype=model_dtype)  
                 mask = batch["mask"].to(dtype=model_dtype)
                 
                 # Validate input dimensions
@@ -849,7 +848,7 @@ def train_loop(
                 )
                 
                 # Convert to [B, T, C, H, W] format for transformer
-                clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
+                clean_frames = clean_frames.permute(0, 2, 1, 3, 4)  
                 
                 # Create dummy encoder hidden states (4096 is CogVideoX-5b hidden size)
                 encoder_hidden_states = torch.zeros((B, 1, 4096), device=clean_frames.device, dtype=model_dtype)
@@ -867,10 +866,10 @@ def train_loop(
                 # Get model prediction
                 image_rotary_emb = (
                     prepare_rotary_positional_embeddings(
-                        height=clean_frames.shape[3] * 8,  # Scale back to pixel space
+                        height=clean_frames.shape[3] * 8,  
                         width=clean_frames.shape[4] * 8,
                         num_frames=clean_frames.shape[2],
-                        vae_scale_factor_spatial=8,  # VAE spatial scaling factor
+                        vae_scale_factor_spatial=8,  
                         patch_size=model.config.patch_size,
                         attention_head_dim=model.config.attention_head_dim,
                         device=clean_frames.device,
@@ -886,13 +885,12 @@ def train_loop(
                 dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=device, dtype=dtype)
                 
                 model_output = model(
-                    hidden_states=noisy_frames,  # Already in [B, T, C, H, W] format
+                    hidden_states=noisy_frames,  
                     timestep=timesteps.to(dtype=model_dtype),
-                    encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
-                    cross_attention_kwargs={"scale": 0.0},  # Disable cross attention
+                    encoder_hidden_states=dummy_text_embeds,  
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
-                ).sample  # Access .sample directly instead of unpacking
+                ).sample  
                 noise_pred = model_output
                 
                 # Verify shape consistency
@@ -902,7 +900,7 @@ def train_loop(
                 # Compute loss with SNR rescaling
                 loss = compute_loss_v_pred_with_snr(
                     noise_pred, noise, timesteps, noise_scheduler,
-                    mask=mask.permute(0, 2, 1, 3, 4),  # Match permuted frames
+                    mask=mask.permute(0, 2, 1, 3, 4),  
                     noisy_frames=noisy_frames
                 )
                 
@@ -957,10 +955,10 @@ def train_loop(
                             
                             image_rotary_emb = (
                                 prepare_rotary_positional_embeddings(
-                                    height=clean_frames.shape[3] * 8,  # Scale back to pixel space
+                                    height=clean_frames.shape[3] * 8,  
                                     width=clean_frames.shape[4] * 8,
                                     num_frames=clean_frames.shape[2],
-                                    vae_scale_factor_spatial=8,  # VAE spatial scaling factor
+                                    vae_scale_factor_spatial=8,  
                                     patch_size=model.config.patch_size,
                                     attention_head_dim=model.config.attention_head_dim,
                                     device=clean_frames.device,
@@ -978,11 +976,10 @@ def train_loop(
                             model_output = model(
                                 hidden_states=noisy_frames,
                                 timestep=timesteps,
-                                encoder_hidden_states=dummy_text_embeds,  # Use dummy embeddings
-                                cross_attention_kwargs={"scale": 0.0},  # Disable cross attention
+                                encoder_hidden_states=dummy_text_embeds,  
                                 image_rotary_emb=image_rotary_emb,
                                 return_dict=True
-                            ).sample  # Access .sample directly instead of unpacking
+                            ).sample  
                             noise_pred = model_output
                             val_loss += compute_loss_v_pred_with_snr(noise_pred, noise, timesteps, noise_scheduler, mask=mask, noisy_frames=clean_frames).item()
                     
@@ -1028,7 +1025,7 @@ def train_one_epoch(
     epoch,
 ):
     transformer.train()
-    vae.eval()  # Ensure VAE is in eval mode
+    vae.eval()  
     
     # Enable gradient checkpointing for transformer
     if hasattr(transformer, "enable_gradient_checkpointing"):
@@ -1052,7 +1049,7 @@ def train_one_epoch(
             with torch.cuda.amp.autocast(device_type='cuda', enabled=True, dtype=weight_dtype):
                 # Process in smaller chunks with gradient disabled for VAE
                 frames = batch["frames"].to(weight_dtype)
-                chunk_size = 1  # Process one frame at a time
+                chunk_size = 1  
                 latents_list = []
                 
                 # Split frames into chunks
@@ -1088,10 +1085,10 @@ def train_one_epoch(
                 # Predict noise
                 image_rotary_emb = (
                     prepare_rotary_positional_embeddings(
-                        height=frames.shape[3] * 8,  # Scale back to pixel space
+                        height=frames.shape[3] * 8,  
                         width=frames.shape[4] * 8,
                         num_frames=frames.shape[2],
-                        vae_scale_factor_spatial=8,  # VAE spatial scaling factor
+                        vae_scale_factor_spatial=8,  
                         patch_size=transformer.config.patch_size,
                         attention_head_dim=transformer.config.attention_head_dim,
                         device=frames.device,
@@ -1109,11 +1106,10 @@ def train_one_epoch(
                 model_output = transformer(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=None,  # Use None since we don't need text conditioning
-                    cross_attention_kwargs={"scale": 0.0},  # Disable cross attention
+                    encoder_hidden_states=None,  
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
-                ).sample  # Access .sample directly instead of unpacking
+                ).sample  
                 noise_pred = model_output
                 
                 # Compute loss
@@ -1230,7 +1226,7 @@ def main(args):
         mask_dir=args.mask_dir,
         gt_dir=args.gt_dir,
         num_frames=args.num_frames,
-        frame_stride=1,  # No stride for inpainting
+        frame_stride=1,  
         image_size=args.image_size,
         center_crop=True,
         normalize=True
@@ -1242,7 +1238,7 @@ def main(args):
         mask_dir=args.mask_dir,
         gt_dir=args.gt_dir,
         num_frames=args.num_frames,
-        frame_stride=1,  # No stride for inpainting
+        frame_stride=1,  
         image_size=args.image_size,
         center_crop=True,
         normalize=True
@@ -1433,5 +1429,5 @@ if __name__ == "__main__":
     args.use_8bit_adam = getattr(args, 'use_8bit_adam', False)
     args.use_flash_attention = getattr(args, 'use_flash_attention', False)
     args.vae_precision = getattr(args, 'vae_precision', "fp16")
-    args.max_resolution = getattr(args, 'max_resolution', 640)  # Maximum resolution before chunking
+    args.max_resolution = getattr(args, 'max_resolution', 640)  
     main(args)
