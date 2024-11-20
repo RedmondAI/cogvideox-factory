@@ -683,9 +683,10 @@ class CogVideoXInpaintingPipeline:
         
         # Prepare mask for transformer
         mask_latent = self.prepare_mask(mask).to(dtype=self.weight_dtype)
+        mask_latent = mask_latent.permute(0, 2, 1, 3, 4)  # [B, 1, T, H, W] -> [B, T, 1, H, W]
         
         # Ensure all inputs to transformer are in correct dtype
-        transformer_input = torch.cat([noisy_frames, mask_latent], dim=2)
+        transformer_input = torch.cat([noisy_frames, mask_latent], dim=1)  # Concatenate along temporal dimension
         timesteps = timesteps.to(dtype=self.weight_dtype)
         
         # Create dummy encoder hidden states (no text conditioning)
