@@ -504,9 +504,25 @@ class VideoInpaintingDataset(Dataset):
     
     def _load_mask(self, path: Path) -> torch.Tensor:
         """Load and preprocess a single mask frame."""
-        mask = Image.open(path).convert("L")  # Load as grayscale
+        # Load mask as grayscale
+        mask = Image.open(path).convert("L")
+        
+        # Convert to tensor
         mask = TT.ToTensor()(mask)
-        mask = self.mask_transform(mask)
+        
+        # Threshold to ensure binary values (0 or 1)
+        mask = (mask > 0.5).float()
+        
+        # Apply any additional transforms
+        if self.mask_transform is not None:
+            mask = self.mask_transform(mask)
+        
+        # Ensure single channel
+        if mask.ndim == 2:
+            mask = mask.unsqueeze(0)
+        elif mask.ndim == 3 and mask.shape[0] != 1:
+            mask = mask[0:1]
+        
         return mask
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:

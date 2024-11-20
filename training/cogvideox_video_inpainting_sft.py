@@ -245,6 +245,10 @@ class CogVideoXInpaintingPipeline:
             if len(gt_shape) != 5:
                 raise ValueError(f"GT tensor should have 5 dimensions [B,C,T,H,W], got {len(gt_shape)}")
             
+            # Check mask channel dimension
+            if mask_shape[1] != 1:
+                raise ValueError(f"Mask should have 1 channel, got {mask_shape[1]}")
+            
             # Check batch size consistency
             if not (rgb_shape[0] == mask_shape[0] == gt_shape[0]):
                 raise ValueError(f"Inconsistent batch sizes: RGB={rgb_shape[0]}, Mask={mask_shape[0]}, GT={gt_shape[0]}")
@@ -266,6 +270,10 @@ class CogVideoXInpaintingPipeline:
             logger.info(f"RGB range: [{rgb_min}, {rgb_max}]")
             logger.info(f"Mask range: [{mask_min}, {mask_max}]")
             logger.info(f"GT range: [{gt_min}, {gt_max}]")
+            
+            # Validate mask values are binary (0 or 1)
+            if not torch.all(torch.logical_or(batch["mask"] == 0, batch["mask"] == 1)):
+                raise ValueError("Mask values must be binary (0 or 1)")
             
             # Check for NaN/Inf values
             if torch.isnan(batch["rgb"]).any():
@@ -289,6 +297,10 @@ class CogVideoXInpaintingPipeline:
             # Check dtype consistency
             if not (batch["rgb"].dtype == batch["mask"].dtype == batch["gt"].dtype):
                 raise ValueError("Tensors must have the same dtype")
+            
+            # Validate spatial dimensions are divisible by 8 (VAE downsampling factor)
+            if rgb_shape[3] % 8 != 0 or rgb_shape[4] % 8 != 0:
+                raise ValueError(f"Spatial dimensions must be divisible by 8, got {rgb_shape[3:]} (H, W)")
             
             logger.info("Input validation successful")
             return True
