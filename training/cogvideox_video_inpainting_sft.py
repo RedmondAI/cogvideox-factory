@@ -410,48 +410,30 @@ class CogVideoXInpaintingPipeline:
         """Prepare mask for latent space.
         
         Args:
-            mask: Binary mask of shape [B, 1, T, H, W]
+            mask: Binary mask tensor [B, 1, T, H, W]
             
         Returns:
-            Processed mask of shape [B, 1, T//temporal_ratio, H//8, W//8]
-            where temporal_ratio is from transformer config and 8 is VAE's spatial compression
+            Processed mask tensor [B, 1, T//4, H//8, W//8]
         """
-        # Validate input mask is binary
-        if not torch.all(torch.logical_or(mask == 0, mask == 1)):
-            raise ValueError("Input mask must contain only binary values (0 or 1)")
+        B, T, _, H, W = mask.shape
         
-        # Use transformer's temporal compression ratio and VAE's spatial ratio
-        temporal_ratio = self.transformer.config.temporal_compression_ratio
-        vae_spatial_ratio = 8   # VAE's spatial compression ratio
+        # First apply spatial compression
+        mask_latent = F.interpolate(
+            mask.reshape(-1, 1, H, W),  # Combine batch and time for spatial compression
+            size=(H // 8, W // 8),
+            mode='nearest'
+        ).reshape(B, T, 1, H // 8, W // 8)
         
-        # Calculate target spatial dimensions
-        target_height = mask.shape[3] // vae_spatial_ratio
-        target_width = mask.shape[4] // vae_spatial_ratio
-        target_frames = (mask.shape[2] + temporal_ratio - 1) // temporal_ratio  # Ceiling division
+        # Then apply temporal compression using trilinear interpolation
+        mask_latent = mask_latent.permute(0, 2, 1, 3, 4)  # [B, 1, T, H//8, W//8]
+        mask_latent = F.interpolate(
+            mask_latent,
+            size=(T // 4, H // 8, W // 8),
+            mode='trilinear',
+            align_corners=False
+        )  # [B, 1, T//4, H//8, W//8]
         
-        # Interpolate spatial dimensions only by reshaping to combine batch and time dims
-        mask = F.interpolate(
-            mask.reshape(-1, mask.shape[1], *mask.shape[-2:]),  # Combine batch and time dims
-            size=(target_height, target_width),
-            mode="nearest"  # Use nearest neighbor to preserve binary values
-        ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], target_height, target_width)  # Restore original shape
-        
-        # Apply temporal compression if needed
-        if temporal_ratio > 1:
-            mask = F.interpolate(
-                mask.permute(0, 2, 1, 3, 4),  # [B, 1, T, H, W] -> [B, T, 1, H, W]
-                size=(target_frames, target_height, target_width),
-                mode="nearest"
-            ).permute(0, 2, 1, 3, 4)  # [B, T, 1, H, W] -> [B, 1, T, H, W]
-        
-        # Ensure mask remains binary after interpolation
-        mask = (mask > 0.5).float()
-        
-        # Validate output mask is binary
-        if not torch.all(torch.logical_or(mask == 0, mask == 1)):
-            raise ValueError("Mask contains non-binary values after processing")
-        
-        return mask
+        return mask_latent
     
     def prepare_encoder_hidden_states(self, batch_size: int, device: torch.device, dtype: torch.dtype):
         """
@@ -664,71 +646,65 @@ class CogVideoXInpaintingPipeline:
             
             return mean_diff, max_diff
     
-    def training_step(self, batch):
-        """Execute a training step on a batch of inputs."""
-        frames, mask = batch["rgb"], batch["mask"]
+    def training_step(self, batch, batch_idx):
+        """Training step for inpainting.
         
-        # Validate inputs
-        self.validate_inputs(batch)
+        Args:
+            batch: Dictionary containing 'frames' and 'mask'
+            batch_idx: Index of current batch
+            
+        Returns:
+            Loss value
+        """
+        frames = batch["rgb"]  # [B, T, C, H, W]
+        mask = batch["mask"]      # [B, T, 1, H, W]
         
-        # Move inputs to correct device and dtype for VAE
-        frames = frames.to(device=self.device, dtype=self.dtype)  # Use pipeline's dtype
-        mask = mask.to(device=self.device, dtype=self.dtype)
+        # Encode frames to latent space
+        with torch.no_grad():
+            latents = self.vae.encode(frames.reshape(-1, *frames.shape[-3:]))
+            latents = latents.latent_dist.sample()
+            latents = latents.reshape(frames.shape[0], frames.shape[1], *latents.shape[1:])
         
-        # Get timesteps
-        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=self.device)
-        
-        # Prepare latents
-        latents = self.vae.encode(frames).latent_dist.sample()
-        latents = latents * self.vae.config.scaling_factor
-        
-        # Convert latents to weight_dtype after VAE processing
-        latents = latents.to(dtype=self.weight_dtype)
+        # Prepare mask for latent space
+        mask_latent = self.prepare_mask(mask)
         
         # Add noise to latents
-        noise = torch.randn_like(latents, device=self.device, dtype=self.weight_dtype)
+        noise = torch.randn_like(latents)
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=latents.device)
         noisy_frames = self.noise_scheduler.add_noise(latents, noise, timesteps)
         
-        # Prepare mask for transformer
-        mask_latent = self.prepare_mask(mask).to(dtype=self.weight_dtype)  # [B, 1, T, H, W]
+        # Handle temporal dimensions for transformer input
+        target_frames = self.transformer.config.sample_frames
+        if noisy_frames.shape[1] != target_frames:
+            noisy_frames = F.interpolate(
+                noisy_frames.permute(0, 2, 1, 3, 4),  # [B, T, C, H, W] -> [B, C, T, H, W]
+                size=(target_frames, noisy_frames.shape[3], noisy_frames.shape[4]),
+                mode='trilinear',
+                align_corners=False
+            ).permute(0, 2, 1, 3, 4)  # [B, C, T, H, W] -> [B, T, C, H, W]
         
-        # Pad noisy_frames to match transformer's expected channel dimension
-        padding_channels = self.transformer.config.in_channels - noisy_frames.shape[1] - mask_latent.shape[1]
-        if padding_channels > 0:
-            # Add zero padding to reach 16 channels
-            padding = torch.zeros(
-                (noisy_frames.shape[0], padding_channels, *noisy_frames.shape[2:]),
-                device=noisy_frames.device,
-                dtype=noisy_frames.dtype
-            )
-            transformer_input = torch.cat([noisy_frames, mask_latent, padding], dim=1)  # [B, 16, T, H, W]
-        else:
-            transformer_input = torch.cat([noisy_frames, mask_latent], dim=1)  # [B, C+1, T, H, W]
+        # Concatenate noisy frames with mask along channel dimension
+        transformer_input = torch.cat([noisy_frames, mask_latent], dim=2)
         
-        # Ensure all inputs to transformer are in correct dtype
-        transformer_input = transformer_input.to(dtype=self.weight_dtype)
-        timesteps = timesteps.to(dtype=self.weight_dtype)
-        
-        # Create dummy encoder hidden states (no text conditioning)
-        batch_size = transformer_input.shape[0]
-        encoder_hidden_states = torch.zeros(
-            batch_size, 1, self.transformer.config.text_embed_dim, 
-            device=self.device, dtype=self.weight_dtype
+        # Get encoder hidden states (zero tensors since we're not using text)
+        encoder_hidden_states = self.prepare_encoder_hidden_states(
+            batch_size=frames.shape[0],
+            device=frames.device,
+            dtype=frames.dtype
         )
         
-        # Predict noise
+        # Get model prediction
         noise_pred = self.transformer(
-            hidden_states=transformer_input,
+            sample=transformer_input,
             timestep=timesteps,
             encoder_hidden_states=encoder_hidden_states,
-        ).sample
+            return_dict=False
+        )[0]
         
-        # Convert predictions back to scheduler format [B, C, T, H, W]
-        noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
+        # Compute loss
+        loss = F.mse_loss(noise_pred, noise)
         
-        # Compute loss (both tensors should already be in weight_dtype)
-        loss = F.mse_loss(noise_pred_scheduler, noise, reduction="mean")
-        
+        self.log("train_loss", loss, prog_bar=True)
         return loss
 
 def collate_fn(examples):
