@@ -319,7 +319,7 @@ class CogVideoXInpaintingPipeline:
             raise
     
     @torch.no_grad()
-    def encode(self, frames, return_dict=True):
+    def encode(self, frames, return_dict=False):
         """
         Encode input frames to latent space without text conditioning.
         
@@ -501,7 +501,7 @@ class CogVideoXInpaintingPipeline:
         do_classifier_free_guidance = guidance_scale > 1.0
         
         # Prepare latent variables
-        latents = self.encode(frames)["latents"]
+        latents = self.encode(frames, return_dict=False)
         
         # Set timesteps
         self.noise_scheduler.set_timesteps(num_inference_steps)
@@ -538,7 +538,7 @@ class CogVideoXInpaintingPipeline:
             
             # Apply mask
             if mask is not None:
-                init_latents = self.encode(frames)["latents"]
+                init_latents = self.encode(frames, return_dict=False)
                 latents = (1 - mask) * init_latents + mask * latents
         
         # Decode latents
@@ -612,7 +612,7 @@ class CogVideoXInpaintingPipeline:
         timesteps = timesteps.to(device=self.device, dtype=self.dtype)  # Ensure timesteps match model dtype
         
         # Get latents
-        clean_latents = self.encode(clean_frames).latents
+        clean_latents = self.encode(clean_frames, return_dict=False)  # Don't return dict, just get tensor directly
         clean_latents = clean_latents.to(dtype=self.dtype)  # Ensure latents match model dtype
         
         # Add noise to latents
