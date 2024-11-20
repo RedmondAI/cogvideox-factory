@@ -582,75 +582,71 @@ class CogVideoXInpaintingPipeline:
 
     def training_step(self, batch):
         """Execute a training step on a batch of inputs."""
-        clean_frames = batch["rgb"].to(device=self.device, dtype=self.weight_dtype)
-        masks = batch["mask"].to(device=self.device, dtype=self.weight_dtype)
-        gt_frames = batch["gt"].to(device=self.device, dtype=self.weight_dtype)
-
-        # First encode through VAE
-        with torch.no_grad():
-            # Encode clean frames
-            clean_latents = self.vae.encode(clean_frames).latent_dist.sample()
-            clean_latents = clean_latents * self.vae.config.scaling_factor
-
-            # Encode ground truth frames
-            gt_latents = self.vae.encode(gt_frames).latent_dist.sample()
-            gt_latents = gt_latents * self.vae.config.scaling_factor
-
-            # Downsample masks to match latent resolution
-            # First permute to match expected format [B, C, T, H, W]
-            masks = masks.permute(0, 1, 2, 3, 4)
-            # Interpolate spatial dimensions only by reshaping to combine batch and time dims
-            masks = F.interpolate(
-                masks.reshape(-1, masks.shape[1], *masks.shape[-2:]),  # Combine batch and time dims
-                size=clean_latents.shape[-2:],
-                mode="nearest"
-            ).reshape(masks.shape[0], masks.shape[1], masks.shape[2], *clean_latents.shape[-2:])  # Restore original shape
-
-        # Add noise to latents
-        noise = torch.randn_like(clean_latents)
-        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (clean_latents.shape[0],), device=self.device)
-        noisy_latents = self.noise_scheduler.add_noise(clean_latents, noise, timesteps)
-
+        # Process in smaller chunks with gradient disabled for VAE
+        frames = batch["frames"].to(self.weight_dtype)
+        chunk_size = 1  
+        latents_list = []
+        
+        # Split frames into chunks
+        for i in range(0, frames.shape[0], chunk_size):
+            chunk = frames[i:i+chunk_size]
+            torch.cuda.empty_cache()
+            
+            # Move chunk to CPU after processing if needed
+            with torch.no_grad():
+                latents_chunk = self.vae.encode(chunk).latent_dist.sample()
+                latents_chunk = latents_chunk * self.vae.config.scaling_factor
+                latents_list.append(latents_chunk.cpu() if i + chunk_size < frames.shape[0] else latents_chunk)
+            del chunk
+            torch.cuda.empty_cache()
+        
+        # Concatenate all chunks
+        if len(latents_list) > 1:
+            latents = torch.cat([chunk.cuda() if chunk.device.type == 'cpu' else chunk for chunk in latents_list], dim=0)
+        else:
+            latents = latents_list[0]
+        del latents_list
+        torch.cuda.empty_cache()
+        
+        # Get noise
+        noise = torch.randn_like(latents)
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)
+        noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+        
+        # Free up memory
+        del frames, latents
+        torch.cuda.empty_cache()
+        
         # Convert to [B, T, C, H, W] format for transformer
         noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
-
-        # Prepare rotary embeddings for spatial positions
-        image_rotary_emb = prepare_rotary_positional_embeddings(
-            height=clean_frames.shape[3],  # Original pixel space height
-            width=clean_frames.shape[4],   # Original pixel space width
-            num_frames=clean_frames.shape[2],
-            vae_scale_factor_spatial=8,  # VAE's spatial compression ratio
-            patch_size=self.transformer.config.patch_size,
-            attention_head_dim=self.transformer.config.attention_head_dim,
-            device=self.device,
-        ) if self.transformer.config.use_rotary_positional_embeddings else None
-
-        # Create dummy text embeddings for the patch embedding layer
-        batch_size = noisy_latents.shape[0]
-        device = noisy_latents.device
-        dtype = noisy_latents.dtype
-        dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=device, dtype=dtype)
-
-        # Get model prediction without text conditioning
+        
+        # Create dummy encoder hidden states
+        batch_size = noisy_frames.shape[0]
+        device = noisy_frames.device
+        dtype = noisy_frames.dtype
+        encoder_hidden_states = torch.zeros(batch_size, 1, self.transformer.config.text_embed_dim, device=device, dtype=dtype)
+        
+        # Create position IDs for rotary embeddings
+        position_ids = torch.arange(noisy_frames.shape[1], device=device)
+        
+        # Predict noise
         noise_pred = self.transformer(
-            hidden_states=noisy_frames,  
+            hidden_states=noisy_frames,
             timestep=timesteps.to(dtype=noisy_frames.dtype),
-            encoder_hidden_states=dummy_text_embeds,  
-        ).sample  
-
-        # Convert predictions back to [B, C, T, H, W] format
-        noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
-
-        # Compute loss with SNR scaling
-        loss = compute_loss_v_pred_with_snr(
-            noise_pred=noise_pred,
-            noise=noise,
-            timesteps=timesteps,
-            scheduler=self.noise_scheduler,
-            mask=masks.permute(0, 2, 1, 3, 4),  
-            noisy_frames=noisy_latents
-        )
-
+            encoder_hidden_states=encoder_hidden_states,
+            position_ids=position_ids,
+        ).sample
+        
+        # Convert predictions back to scheduler format [B, C, T, H, W]
+        noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
+        
+        # Compute loss
+        loss = F.mse_loss(noise_pred_scheduler.float(), noise.float(), reduction="mean")
+        
+        # Free up more memory
+        del noise_pred, noisy_latents, noise
+        torch.cuda.empty_cache()
+        
         return loss
     
 def collate_fn(examples):
@@ -1085,11 +1081,15 @@ def train_one_epoch(
                 # Convert to [B, T, C, H, W] format for transformer
                 noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
                 
+                # Create position IDs for rotary embeddings
+                position_ids = torch.arange(noisy_frames.shape[1], device=device)
+                
                 # Predict noise
                 noise_pred = transformer(
                     hidden_states=noisy_frames,
                     timestep=timesteps.to(dtype=noisy_frames.dtype),
                     encoder_hidden_states=encoder_hidden_states,
+                    position_ids=position_ids,
                 ).sample
                 
                 # Convert predictions back to scheduler format [B, C, T, H, W]
