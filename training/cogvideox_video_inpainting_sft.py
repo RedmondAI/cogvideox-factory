@@ -1097,7 +1097,7 @@ def train_one_epoch(
             with torch.cuda.amp.autocast(device_type='cuda', enabled=True, dtype=weight_dtype):
                 # Get input frames and ensure correct shape [B, C, T, H, W]
                 frames = batch["rgb"]  # [B, T, C, H, W]
-                frames = frames.permute(0, 2, 1, 3, 4)  # [B, C, T, H, W]
+                frames = frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W] -> [B, C, T, H, W]
                 
                 # Process in chunks with gradient disabled for VAE
                 chunk_size = min(8, frames.shape[2])  # Process up to 8 frames at once
