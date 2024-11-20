@@ -425,6 +425,9 @@ class CogVideoXInpaintingPipeline:
         temporal_ratio = self.transformer.config.temporal_compression_ratio
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
         
+        # Ensure mask is binary before processing
+        mask = (mask > 0.5).to(mask.dtype)
+        
         mask = mask.permute(0, 1, 2, 3, 4)
         # Interpolate spatial dimensions only by reshaping to combine batch and time dims
         mask = F.interpolate(
@@ -432,6 +435,9 @@ class CogVideoXInpaintingPipeline:
             size=(16, 16),
             mode="nearest"
         ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], 16, 16)  # Restore original shape
+        
+        # Ensure mask is binary after interpolation
+        mask = (mask > 0.5).to(mask.dtype)
         
         return mask
     
@@ -616,6 +622,7 @@ class CogVideoXInpaintingPipeline:
         # Process in smaller chunks with gradient disabled for VAE
         frames = batch["rgb"].to(self.weight_dtype)  # [B, C, T, H, W]
         mask = batch["mask"].to(self.weight_dtype)   # [B, 1, T, H, W]
+        mask = (mask > 0.5).to(self.weight_dtype)
         gt = batch["gt"].to(self.weight_dtype)       # [B, C, T, H, W]
         
         chunk_size = 1  
@@ -886,6 +893,7 @@ def train_loop(
                 # Get input tensors and ensure correct dtype
                 clean_frames = batch["rgb"].to(device=model.device, dtype=model_dtype)  
                 mask = batch["mask"].to(device=model.device, dtype=model_dtype)
+                mask = (mask > 0.5).to(model_dtype)
                 
                 # Validate input dimensions
                 B, C, T, H, W = clean_frames.shape
@@ -996,6 +1004,7 @@ def train_loop(
                         for val_step, val_batch in enumerate(val_dataloader):
                             clean_frames = val_batch["rgb"] 
                             mask = val_batch["mask"]
+                            mask = (mask > 0.5).to(model_dtype)
                             
                             noise = torch.randn_like(clean_frames)
                             timesteps = torch.randint(
