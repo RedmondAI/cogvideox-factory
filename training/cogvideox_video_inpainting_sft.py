@@ -636,6 +636,7 @@ class CogVideoXInpaintingPipeline:
             with torch.no_grad():
                 latents_chunk = self.vae.encode(chunk).latent_dist.sample()
                 latents_chunk = latents_chunk * self.vae.config.scaling_factor
+                latents_chunk = latents_chunk.to(dtype=self.weight_dtype)
                 latents_list.append(latents_chunk.cpu() if i + chunk_size < frames.shape[0] else latents_chunk)
             del chunk
             torch.cuda.empty_cache()
@@ -1161,10 +1162,13 @@ def train_one_epoch(
                 # Create position IDs for rotary embeddings
                 position_ids = torch.arange(noisy_frames.shape[1], device=device)
                 
+                # Cast timesteps to weight_dtype before passing to transformer
+                timesteps = timesteps.to(dtype=weight_dtype)
+                
                 # Predict noise
                 noise_pred = transformer(
                     hidden_states=noisy_frames,
-                    timestep=timesteps.to(dtype=weight_dtype),  # Cast timesteps to weight_dtype
+                    timestep=timesteps,
                     encoder_hidden_states=encoder_hidden_states,
                     position_ids=position_ids,
                 ).sample
