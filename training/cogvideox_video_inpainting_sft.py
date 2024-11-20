@@ -646,12 +646,11 @@ class CogVideoXInpaintingPipeline:
             
             return mean_diff, max_diff
     
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch):
         """Training step for inpainting.
         
         Args:
             batch: Dictionary containing 'frames' and 'mask'
-            batch_idx: Index of current batch
             
         Returns:
             Loss value
