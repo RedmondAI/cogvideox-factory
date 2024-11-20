@@ -596,7 +596,7 @@ class CogVideoXInpaintingPipeline:
 
     def training_step(self, batch):
         """Execute a training step on a batch of inputs."""
-        frames, mask = batch["frames"], batch["mask"]
+        frames, mask = batch["rgb"], batch["mask"]
         
         # Validate inputs
         self.validate_inputs(batch)
@@ -1037,7 +1037,7 @@ def train_one_epoch(
         with accelerator.accumulate(transformer):
             with torch.cuda.amp.autocast(device_type='cuda', enabled=True, dtype=weight_dtype):
                 # Process in smaller chunks with gradient disabled for VAE
-                frames = batch["frames"]  # Keep original dtype for VAE
+                frames = batch["rgb"]  # Keep original dtype for VAE
                 chunk_size = 1  
                 latents_list = []
                 
