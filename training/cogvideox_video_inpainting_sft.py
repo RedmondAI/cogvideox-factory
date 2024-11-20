@@ -508,14 +508,11 @@ class CogVideoXInpaintingPipeline:
                 latent_model_input = torch.cat([latent_model_input] * 2)
             
             # Predict noise residual
-            model_output = self.transformer(
-                hidden_states=latent_model_input,
+            noise_pred = self.transformer(
+                hidden_states=latent_model_input,  
                 timestep=t.to(dtype=latent_model_input.dtype),
                 encoder_hidden_states=None,  
-                image_rotary_emb=None,
-                return_dict=True
             ).sample  
-            noise_pred = model_output
             
             # Perform guidance
             if do_classifier_free_guidance:
@@ -635,15 +632,12 @@ class CogVideoXInpaintingPipeline:
         dummy_text_embeds = torch.zeros((batch_size, 1, 4096), device=device, dtype=dtype)
 
         # Get model prediction without text conditioning
-        model_output = self.transformer(
+        noise_pred = self.transformer(
             hidden_states=noisy_frames,  
             timestep=timesteps.to(dtype=noisy_frames.dtype),
             encoder_hidden_states=dummy_text_embeds,  
-            image_rotary_emb=None,
-            return_dict=True
         ).sample  
-        noise_pred = model_output
-        
+
         # Convert predictions back to [B, C, T, H, W] format
         noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
 
