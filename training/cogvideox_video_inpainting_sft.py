@@ -880,7 +880,7 @@ def train_loop(
                 
                 model_output = model(
                     hidden_states=noisy_frames,
-                    timestep=timesteps,
+                    timestep=timesteps.to(dtype=noisy_frames.dtype),
                     encoder_hidden_states=dummy_text_embeds,  
                     image_rotary_emb=image_rotary_emb,
                     return_dict=True
@@ -969,7 +969,7 @@ def train_loop(
                             
                             model_output = model(
                                 hidden_states=noisy_frames,
-                                timestep=timesteps,
+                                timestep=timesteps.to(dtype=noisy_frames.dtype),
                                 encoder_hidden_states=dummy_text_embeds,  
                                 image_rotary_emb=image_rotary_emb,
                                 return_dict=True
@@ -1082,15 +1082,21 @@ def train_one_epoch(
                 dtype = noisy_latents.dtype
                 encoder_hidden_states = torch.zeros(batch_size, 1, transformer.config.text_embed_dim, device=device, dtype=dtype)
                 
+                # Convert to [B, T, C, H, W] format for transformer
+                noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
+                
                 # Predict noise
-                model_output = transformer(
-                    hidden_states=noisy_latents,
-                    timestep=timesteps.to(dtype=noisy_latents.dtype),
+                noise_pred = transformer(
+                    hidden_states=noisy_frames,
+                    timestep=timesteps.to(dtype=noisy_frames.dtype),
                     encoder_hidden_states=encoder_hidden_states,
                 ).sample
                 
+                # Convert predictions back to scheduler format [B, C, T, H, W]
+                noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
+                
                 # Compute loss
-                loss = F.mse_loss(model_output.float(), noise.float(), reduction="mean")
+                loss = F.mse_loss(noise_pred_scheduler.float(), noise.float(), reduction="mean")
             
             # Backprop and optimize
             accelerator.backward(loss)
