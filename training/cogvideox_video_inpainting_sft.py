@@ -594,6 +594,65 @@ class CogVideoXInpaintingPipeline:
         
         return mean_diff, max_diff
 
+    def validation_step(self, batch):
+        """Execute a validation step on a batch of inputs."""
+        with torch.no_grad():
+            frames = batch["rgb"]  # Keep original dtype for VAE
+            mask = batch["mask"]
+
+            # Move inputs to correct device and dtype for VAE
+            frames = frames.to(device=self.device, dtype=self.vae.config.torch_dtype)  # Use VAE's dtype
+            mask = mask.to(device=self.device, dtype=self.vae.config.torch_dtype)
+
+            # Process in smaller chunks with gradient disabled for VAE
+            chunk_size = 1  
+            latents_list = []
+            
+            # Split frames into chunks
+            for i in range(0, frames.shape[0], chunk_size):
+                chunk = frames[i:i+chunk_size]
+                chunk_latents = self.vae.encode(chunk).latent_dist.mode()
+                chunk_latents = chunk_latents * self.vae.config.scaling_factor
+                latents_list.append(chunk_latents)
+            
+            # Concatenate all chunks
+            latents = torch.cat(latents_list, dim=0)
+            
+            # Convert latents to weight_dtype after VAE processing
+            latents = latents.to(dtype=self.weight_dtype)
+            
+            # Prepare mask for transformer
+            mask_latent = self.prepare_mask(mask).to(dtype=self.weight_dtype)
+            
+            # Prepare transformer input
+            transformer_input = torch.cat([latents, mask_latent], dim=2)
+            
+            # Create dummy encoder hidden states (no text conditioning)
+            batch_size = transformer_input.shape[0]
+            encoder_hidden_states = torch.zeros(
+                batch_size, 1, self.transformer.config.text_embed_dim, 
+                device=self.device, dtype=self.weight_dtype
+            )
+            
+            # Predict noise
+            noise_pred = self.transformer(
+                hidden_states=transformer_input,
+                timestep=torch.zeros(batch_size, device=self.device, dtype=self.weight_dtype),
+                encoder_hidden_states=encoder_hidden_states,
+            ).sample
+            
+            # Convert predictions back to scheduler format [B, C, T, H, W]
+            noise_pred_scheduler = noise_pred.permute(0, 2, 1, 3, 4)
+            
+            # Decode predictions
+            decoded_frames = self.vae.decode(noise_pred_scheduler / self.vae.config.scaling_factor).sample
+            
+            # Calculate mean and max absolute difference
+            mean_diff = torch.mean(torch.abs(decoded_frames - frames))
+            max_diff = torch.max(torch.abs(decoded_frames - frames))
+            
+            return mean_diff, max_diff
+    
     def training_step(self, batch):
         """Execute a training step on a batch of inputs."""
         frames, mask = batch["rgb"], batch["mask"]
@@ -602,8 +661,8 @@ class CogVideoXInpaintingPipeline:
         self.validate_inputs(batch)
         
         # Move inputs to correct device and dtype for VAE
-        frames = frames.to(device=self.device, dtype=torch.float32)  # VAE expects float32
-        mask = mask.to(device=self.device, dtype=torch.float32)
+        frames = frames.to(device=self.device, dtype=self.vae.config.torch_dtype)  # Use VAE's dtype
+        mask = mask.to(device=self.device, dtype=self.vae.config.torch_dtype)
         
         # Get timesteps
         timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=self.device)
@@ -647,7 +706,7 @@ class CogVideoXInpaintingPipeline:
         loss = F.mse_loss(noise_pred_scheduler, noise, reduction="mean")
         
         return loss
-    
+
 def collate_fn(examples):
     rgb = torch.stack([example["rgb"] for example in examples])
     mask = torch.stack([example["mask"] for example in examples])
