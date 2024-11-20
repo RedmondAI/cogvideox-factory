@@ -660,9 +660,11 @@ class CogVideoXInpaintingPipeline:
         
         # Encode frames to latent space
         with torch.no_grad():
-            latents = self.vae.encode(frames.reshape(-1, *frames.shape[-3:]))
-            latents = latents.latent_dist.sample()
-            latents = latents.reshape(frames.shape[0], frames.shape[1], *latents.shape[1:])
+            # Reshape frames to match VAE's expected input shape [B, C, T, H, W]
+            frames = frames.permute(0, 2, 1, 3, 4)
+            latents = self.vae.encode(frames).latent_dist.sample()
+            # Reshape latents back to [B, T, C, H, W]
+            latents = latents.permute(0, 2, 1, 3, 4)
         
         # Prepare mask for latent space
         mask_latent = self.prepare_mask(mask)
