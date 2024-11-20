@@ -650,7 +650,7 @@ class CogVideoXInpaintingPipeline:
         
         # Get noise
         noise = torch.randn_like(latents)
-        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device).to(dtype=latents.dtype)  # Cast timesteps to model dtype immediately
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)  # Keep timesteps as long tensor
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
         
         # Free up memory
@@ -1140,7 +1140,7 @@ def train_one_epoch(
                 
                 # Get noise
                 noise = torch.randn_like(latents)
-                timesteps = torch.randint(0, args.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device).to(dtype=latents.dtype)  # Cast timesteps to model dtype immediately
+                timesteps = torch.randint(0, args.noise_scheduler.config.num_train_timesteps, (frames.shape[0],), device=latents.device)  # Keep timesteps as long tensor
                 noisy_latents = args.noise_scheduler.add_noise(latents, noise, timesteps)
                 
                 # Free up memory
