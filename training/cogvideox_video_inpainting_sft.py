@@ -424,13 +424,16 @@ class CogVideoXInpaintingPipeline:
         temporal_ratio = self.transformer.config.temporal_compression_ratio
         vae_spatial_ratio = 8   # VAE's spatial compression ratio
         
-        mask = mask.permute(0, 1, 2, 3, 4)
+        # Calculate target spatial dimensions
+        target_height = mask.shape[3] // vae_spatial_ratio
+        target_width = mask.shape[4] // vae_spatial_ratio
+        
         # Interpolate spatial dimensions only by reshaping to combine batch and time dims
         mask = F.interpolate(
             mask.reshape(-1, mask.shape[1], *mask.shape[-2:]),  # Combine batch and time dims
-            size=(16, 16),
+            size=(target_height, target_width),
             mode="nearest"  # Use nearest neighbor to preserve binary values
-        ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], 16, 16)  # Restore original shape
+        ).reshape(mask.shape[0], mask.shape[1], mask.shape[2], target_height, target_width)  # Restore original shape
         
         # Ensure mask remains binary after interpolation
         mask = (mask > 0.5).float()
