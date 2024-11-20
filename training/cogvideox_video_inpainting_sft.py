@@ -690,11 +690,23 @@ class CogVideoXInpaintingPipeline:
         noisy_frames = self.noise_scheduler.add_noise(latents, noise, timesteps)
         
         # Prepare mask for transformer
-        mask_latent = self.prepare_mask(mask).to(dtype=self.weight_dtype)
-        mask_latent = mask_latent.permute(0, 2, 1, 3, 4)  # [B, 1, T, H, W] -> [B, T, 1, H, W]
+        mask_latent = self.prepare_mask(mask).to(dtype=self.weight_dtype)  # [B, 1, T, H, W]
+        
+        # Pad noisy_frames to match transformer's expected channel dimension
+        padding_channels = self.transformer.config.in_channels - noisy_frames.shape[1] - mask_latent.shape[1]
+        if padding_channels > 0:
+            # Add zero padding to reach 16 channels
+            padding = torch.zeros(
+                (noisy_frames.shape[0], padding_channels, *noisy_frames.shape[2:]),
+                device=noisy_frames.device,
+                dtype=noisy_frames.dtype
+            )
+            transformer_input = torch.cat([noisy_frames, mask_latent, padding], dim=1)  # [B, 16, T, H, W]
+        else:
+            transformer_input = torch.cat([noisy_frames, mask_latent], dim=1)  # [B, C+1, T, H, W]
         
         # Ensure all inputs to transformer are in correct dtype
-        transformer_input = torch.cat([noisy_frames, mask_latent], dim=1)  # Concatenate along temporal dimension
+        transformer_input = transformer_input.to(dtype=self.weight_dtype)
         timesteps = timesteps.to(dtype=self.weight_dtype)
         
         # Create dummy encoder hidden states (no text conditioning)
