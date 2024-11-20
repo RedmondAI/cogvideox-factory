@@ -625,7 +625,7 @@ class CogVideoXInpaintingPipeline:
         B, _, T, H, W = mask.shape
         latent_h = H // 8  # VAE spatial reduction
         latent_w = W // 8
-        latent_t = T // 4  # VAE temporal reduction
+        latent_t = noisy_latents.shape[2]  # Use temporal dimension from noisy_latents
         mask_latent = F.interpolate(
             mask.view(B, 1, T, H, W).float(),
             size=(latent_t, latent_h, latent_w),
@@ -679,7 +679,7 @@ class CogVideoXInpaintingPipeline:
         # Compute loss
         loss = F.mse_loss(noise_pred_scheduler.float(), noise.float(), reduction="mean")
         
-        # Free up more memory
+        # Free up memory
         del noise_pred, noisy_latents, noise, transformer_input
         torch.cuda.empty_cache()
         
