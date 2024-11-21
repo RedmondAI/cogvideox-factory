@@ -415,7 +415,7 @@ class CogVideoXInpaintingPipeline:
         Returns:
             Processed mask tensor [B, 1, T//4, H//8, W//8]
         """
-        B, T, _, H, W = mask.shape
+        B, C, T, H, W = mask.shape
         
         # First apply spatial compression
         mask_latent = F.interpolate(
