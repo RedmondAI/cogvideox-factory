@@ -675,10 +675,10 @@ class CogVideoXInpaintingPipeline:
         
         # Handle temporal dimensions for transformer input
         target_frames = self.transformer.config.sample_frames
-        if noisy_frames.shape[1] != target_frames:  # Check temporal dim (T) at index 1
+        if noisy_frames.shape[2] != target_frames:  # Check temporal dim (T) at index 2
             noisy_frames = F.interpolate(
-                noisy_frames,  # Already in [C, T, H, W]
-                size=(target_frames, noisy_frames.shape[2], noisy_frames.shape[3]),
+                noisy_frames,
+                size=(target_frames, noisy_frames.shape[3], noisy_frames.shape[4]),
                 mode='trilinear',
                 align_corners=False
             )
@@ -695,8 +695,9 @@ class CogVideoXInpaintingPipeline:
             )
         
         # Convert mask to [B, T, C, H, W] format to match noisy_frames
-        # Expand mask channels to match noisy_frames channels
-        mask_latent = mask_latent.permute(0, 2, 1, 3, 4).expand(-1, -1, noisy_frames.shape[2], -1, -1)
+        # First permute to [B, T, C, H, W], then expand channels
+        mask_latent = mask_latent.permute(0, 2, 1, 3, 4)  # [B, T, 1, H, W]
+        mask_latent = mask_latent.expand(-1, -1, noisy_frames.shape[2], -1, -1)  # [B, T, C, H, W]
         
         # Concatenate noisy frames with mask along channel dimension
         transformer_input = torch.cat([noisy_frames, mask_latent], dim=2)
