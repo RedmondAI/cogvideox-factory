@@ -603,8 +603,8 @@ class CogVideoXInpaintingPipeline:
             latents_list = []
             
             # Split frames into chunks
-            for i in range(0, frames.shape[0], chunk_size):
-                chunk = frames[i:i+chunk_size]
+            for i in range(0, frames.shape[2], chunk_size):
+                chunk = frames[:, :, i:i+chunk_size]
                 chunk_latents = self.vae.encode(chunk).latent_dist.mode()
                 chunk_latents = chunk_latents * self.vae.config.scaling_factor
                 # Cast to weight_dtype after VAE processing
@@ -612,13 +612,13 @@ class CogVideoXInpaintingPipeline:
                 latents_list.append(chunk_latents)
             
             # Concatenate all chunks
-            latents = torch.cat(latents_list, dim=0)
+            latents = torch.cat(latents_list, dim=1)
             
             # Prepare mask for transformer
             mask_latent = self.prepare_mask(mask).to(dtype=self.weight_dtype)
             
             # Prepare transformer input
-            transformer_input = torch.cat([latents, mask_latent], dim=2)
+            transformer_input = torch.cat([latents, mask_latent], dim=1)
             
             # Create dummy encoder hidden states (no text conditioning)
             batch_size = transformer_input.shape[0]
@@ -655,36 +655,35 @@ class CogVideoXInpaintingPipeline:
         Returns:
             Loss value
         """
-        frames = batch["rgb"]  # [B, T, C, H, W]
-        mask = batch["mask"]      # [B, T, 1, H, W]
+        frames = batch["rgb"]  # [B, C, T, H, W]
+        mask = batch["mask"]      # [B, 1, T, H, W]
         
         # Encode frames to latent space
         with torch.no_grad():
-            # Reshape frames to match VAE's expected input shape [B, C, T, H, W]
-            frames = frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W] -> [B, C, T, H, W]
+            # Input frames are already [C, T, H, W] from dataset
             latents = self.vae.encode(frames).latent_dist.sample()
             latents = latents * self.vae.config.scaling_factor
-            # Keep latents in [B, C, T, H, W] format for noise scheduler
+            # Keep latents in [C, T, H, W] format
             
-        # Prepare mask for latent space
+        # Prepare mask for latent space (mask is [1, T, H, W])
         mask_latent = self.prepare_mask(mask)
         
-        # Add noise to latents (keeping [B, C, T, H, W] format)
+        # Add noise to latents (keeping [C, T, H, W] format)
         noise = torch.randn_like(latents)
         timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=latents.device)
         noisy_frames = self.noise_scheduler.add_noise(latents, noise, timesteps)
         
         # Handle temporal dimensions for transformer input
         target_frames = self.transformer.config.sample_frames
-        if noisy_frames.shape[2] != target_frames:  # Check temporal dim (T) at index 2
+        if noisy_frames.shape[1] != target_frames:  # Check temporal dim (T) at index 1
             noisy_frames = F.interpolate(
-                noisy_frames,  # Already in [B, C, T, H, W]
-                size=(target_frames, noisy_frames.shape[3], noisy_frames.shape[4]),
+                noisy_frames,  # Already in [C, T, H, W]
+                size=(target_frames, noisy_frames.shape[2], noisy_frames.shape[3]),
                 mode='trilinear',
                 align_corners=False
             )
         
-        # Convert to [B, T, C, H, W] for transformer
+        # Convert to [T, C, H, W] for transformer
         noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
         
         # Concatenate noisy frames with mask along channel dimension
@@ -1096,8 +1095,7 @@ def train_one_epoch(
         with accelerator.accumulate(transformer):
             with torch.cuda.amp.autocast(device_type='cuda', enabled=True, dtype=weight_dtype):
                 # Get input frames and ensure correct shape [B, C, T, H, W]
-                frames = batch["rgb"]  # [B, T, C, H, W]
-                frames = frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W] -> [B, C, T, H, W]
+                frames = batch["rgb"]  # [B, C, T, H, W]
                 
                 # Process in chunks with gradient disabled for VAE
                 chunk_size = min(8, frames.shape[2])  # Process up to 8 frames at once
