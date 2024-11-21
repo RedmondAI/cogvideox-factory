@@ -684,7 +684,7 @@ class CogVideoXInpaintingPipeline:
             )
         
         # Convert to [T, C, H, W] for transformer
-        noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)
+        noisy_frames = noisy_frames.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
         
         # Ensure mask_latent matches noisy_frames temporal dimension
         if mask_latent.shape[2] != target_frames:
@@ -694,8 +694,14 @@ class CogVideoXInpaintingPipeline:
                 mode='nearest'
             )
         
-        # Permute mask to match noisy_frames dimensions
+        # Permute mask to match noisy_frames dimensions [B, T, C, H, W]
         mask_latent = mask_latent.permute(0, 2, 1, 3, 4)
+        
+        # Get the number of channels in noisy_frames
+        noisy_frames_channels = noisy_frames.shape[2]
+        
+        # Repeat mask_latent along channel dimension to match noisy_frames
+        mask_latent = mask_latent.repeat(1, 1, noisy_frames_channels, 1, 1)
         
         # Concatenate noisy frames with mask along channel dimension
         transformer_input = torch.cat([noisy_frames, mask_latent], dim=2)
