@@ -711,7 +711,7 @@ class CogVideoXInpaintingPipeline:
         
         # Get model prediction
         noise_pred = self.transformer(
-            sample=transformer_input,
+            hidden_states=transformer_input,
             timestep=timesteps,
             encoder_hidden_states=encoder_hidden_states,
             return_dict=False
