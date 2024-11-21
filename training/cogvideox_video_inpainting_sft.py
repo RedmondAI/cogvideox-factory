@@ -666,7 +666,7 @@ class CogVideoXInpaintingPipeline:
             # Keep latents in [C, T, H, W] format
             
         # Prepare mask for latent space (mask is [1, T, H, W])
-        mask_latent = self.prepare_mask(mask)
+        mask_latent = self.prepare_mask(mask)  # [B, 1, T, H, W]
         
         # Add noise to latents (keeping [C, T, H, W] format)
         noise = torch.randn_like(latents)
@@ -695,7 +695,8 @@ class CogVideoXInpaintingPipeline:
             )
         
         # Convert mask to [B, T, C, H, W] format to match noisy_frames
-        mask_latent = mask_latent.permute(0, 2, 1, 3, 4)
+        # Expand mask channels to match noisy_frames channels
+        mask_latent = mask_latent.permute(0, 2, 1, 3, 4).expand(-1, -1, noisy_frames.shape[2], -1, -1)
         
         # Concatenate noisy frames with mask along channel dimension
         transformer_input = torch.cat([noisy_frames, mask_latent], dim=2)
