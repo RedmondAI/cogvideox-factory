@@ -694,26 +694,18 @@ class CogVideoXInpaintingPipeline:
                 mode='nearest'
             )
         
-        # Convert mask to [B, T, C, H, W] format to match noisy_frames
-        # First permute to [B, T, C, H, W], then expand channels
+        # Ensure noisy_frames has correct channel dimension (16)
+        if noisy_frames.shape[2] != 16:  # Channel dimension at index 2 after permute
+            noisy_frames = noisy_frames[:, :, :16, :, :]  # Take first 16 channels
+        
+        # Ensure mask_latent matches noisy_frames dimensions
         mask_latent = mask_latent.permute(0, 2, 1, 3, 4)  # [B, T, 1, H, W]
-        mask_latent = mask_latent.expand(-1, -1, noisy_frames.shape[2], -1, -1)  # [B, T, C, H, W]
-        
-        # Concatenate noisy frames with mask along channel dimension
-        transformer_input = torch.cat([noisy_frames, mask_latent], dim=2)
-        
-        # Get encoder hidden states (zero tensors since we're not using text)
-        encoder_hidden_states = self.prepare_encoder_hidden_states(
-            batch_size=frames.shape[0],
-            device=frames.device,
-            dtype=frames.dtype
-        )
         
         # Get model prediction
         noise_pred = self.transformer(
-            hidden_states=transformer_input,
+            hidden_states=noisy_frames,  # Use noisy_frames directly
             timestep=timesteps,
-            encoder_hidden_states=encoder_hidden_states,
+            encoder_hidden_states=None,  
             return_dict=False
         )[0]
         
@@ -1170,6 +1162,10 @@ def train_one_epoch(
                 # Rearrange dimensions for transformer [B, T, C, H, W]
                 noisy_frames = noisy_latents.permute(0, 2, 1, 3, 4)
                 
+                # Ensure noisy_frames has correct channel dimension (16)
+                if noisy_frames.shape[2] != 16:  # Channel dimension at index 2 after permute
+                    noisy_frames = noisy_frames[:, :, :16, :, :]  # Take first 16 channels
+                
                 # Create position IDs for rotary embeddings
                 position_ids = torch.arange(noisy_frames.shape[1], device=noisy_frames.device)
                 
@@ -1178,7 +1174,7 @@ def train_one_epoch(
                 
                 # Predict noise (transformer expects [B, T, C, H, W])
                 noise_pred = transformer(
-                    hidden_states=noisy_frames,
+                    hidden_states=noisy_frames,  # Use noisy_frames directly
                     timestep=timesteps,
                     encoder_hidden_states=encoder_hidden_states,
                     position_ids=position_ids,
